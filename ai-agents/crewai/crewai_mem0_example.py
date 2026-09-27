@@ -16,8 +16,8 @@ memórias relevantes antes de responder. A GRAVAÇÃO de memória
 (add()) é feita manualmente depois de cada kickoff(), fora do
 CrewAI.
 
-Pré-requisitos (no venv do CrewAI):
-    pip install crewai mem0ai==2.0.14 neo4j langchain-neo4j python-dotenv
+Pré-requisitos (no venv do CrewAI): ver README, Seção 7.2. Instalar os
+pacotes UM POR VEZ — tudo numa linha só dá erro "resolution-too-deep".
 """
 
 import os
