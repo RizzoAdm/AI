@@ -4,13 +4,13 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 
 ## Hardware Reference
 
-| Component | Spec |
-|---|---|
-| CPU | AMD Ryzen 9 5950X |
-| RAM | 32GB 3600MHz |
-| GPU | GeForce RTX 4080 SUPER 16GB |
-| Motherboard | Aorus X570 Elite |
-| OS Drive | Samsung SSD 990 PRO 2TB (500GB Ubuntu / 1.3TB Windows / 200GB Bazzite) |
+| Component   | Spec                                                                   |
+| ----------- | ---------------------------------------------------------------------- |
+| CPU         | AMD Ryzen 9 5950X                                                      |
+| RAM         | 32GB 3600MHz                                                           |
+| GPU         | GeForce RTX 4080 SUPER 16GB                                            |
+| Motherboard | Aorus X570 Elite                                                       |
+| OS Drive    | Samsung SSD 990 PRO 2TB (500GB Ubuntu / 1.3TB Windows / 200GB Bazzite) |
 
 > This guide targets the **Ubuntu** partition (500GB). Ubuntu 26.04 LTS ("resolute") ships only Python 3.14 by default — see Section 7.1 for why a second Python version is needed for CrewAI.
 
@@ -20,7 +20,7 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 
 Install the latest recommended NVIDIA driver:
 
-```bash
+```
 sudo apt update
 sudo ubuntu-drivers autoinstall
 sudo reboot
@@ -28,20 +28,20 @@ sudo reboot
 
 Verify the driver installation:
 
-```bash
+```
 nvidia-smi
 ```
 
 Install the CUDA Toolkit (latest version, via the official NVIDIA repository):
 
-```bash
+```
 # Follow the official instructions for your Ubuntu version:
 # https://developer.nvidia.com/cuda-downloads
 ```
 
 Verify CUDA:
 
-```bash
+```
 nvcc --version
 ```
 
@@ -51,13 +51,13 @@ nvcc --version
 
 Install Ollama:
 
-```bash
+```
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
 Verify the service is running:
 
-```bash
+```
 systemctl status ollama
 ```
 
@@ -73,7 +73,7 @@ Models downloaded via `ollama pull` are stored at:
 
 Pull each model back down:
 
-```bash
+```
 ollama pull qwen3-coder:30b
 ollama pull qwen3.8:27b
 ollama pull qwen2.5-coder:14b
@@ -86,13 +86,13 @@ ollama pull qwen3:14b
 
 Plus one model pulled via Hugging Face GGUF instead of the Ollama library (used by Hermes Agent, Section 9):
 
-```bash
+```
 ollama run hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M
 ```
 
 Verify installed models:
 
-```bash
+```
 ollama list
 ```
 
@@ -106,29 +106,28 @@ ollama list
 
 Using Docker's official install script (simpler than the manual apt-repository method, works across distros):
 
-```bash
+```
 curl -fsSL https://get.docker.com -o get-docker.sh
 sudo sh get-docker.sh
 ```
 
 Allow running Docker without `sudo` (optional but recommended):
 
-```bash
+```
 sudo usermod -aG docker $USER
 ```
-
 > Log out and back in (or restart the terminal/session) for the group change to take effect.
 
 Confirm the Docker service is running and enabled to start on boot:
 
-```bash
+```
 sudo systemctl status docker
 sudo systemctl is-enabled docker   # should say "enabled"; if not: sudo systemctl enable docker
 ```
 
 Verify Docker:
 
-```bash
+```
 docker run hello-world
 ```
 
@@ -136,7 +135,7 @@ docker run hello-world
 
 Since Ollama runs natively (not in Docker), Open WebUI is run with `--network=host` so the container shares the host's network stack and can reach Ollama directly at `127.0.0.1:11434` — no port mapping or `host.docker.internal` needed on Linux.
 
-```bash
+```
 docker run -d \
   --name open-webui \
   --network=host \
@@ -151,12 +150,11 @@ Access the interface at:
 ```
 http://localhost:8080
 ```
-
 > Note: `--network=host` is Linux-specific and is why the port is 8080 directly (no `-p` mapping) rather than remapped to 3000 as on Mac/Windows setups.
 
 ### 3.3 Verify
 
-```bash
+```
 docker ps
 docker logs open-webui
 ```
@@ -165,17 +163,16 @@ docker logs open-webui
 
 Find the machine's local IP:
 
-```bash
+```
 ip addr show | grep "inet " | grep -v 127.0.0.1
 ```
 
 From another device on the same network, open `http://<LOCAL_IP>:8080`. If it doesn't connect, check the firewall:
 
-```bash
+```
 sudo ufw status
 sudo ufw allow 8080/tcp   # if ufw is active and the port isn't allowed
 ```
-
 > Consider setting a DHCP reservation for this machine on the router so the local IP doesn't change on reboot.
 
 ### 3.5 Remote Access (internet)
@@ -207,22 +204,20 @@ Gives agents (starting with CrewAI) persistent memory: a vector store (Qdrant, e
 
 ### 5.1 Create the venv and install Mem0
 
-```bash
+```
 mkdir -p ~/Projects/AI/ai-agents/mem0 && cd ~/Projects/AI/ai-agents/mem0
 python3 -m venv venv-mem0
 source venv-mem0/bin/activate
 pip install mem0ai ollama neo4j langchain-neo4j python-dotenv
 ```
-
 > Note: as of `mem0ai` 2.2.0, the `[graph]` install extra was dropped — the `neo4j`/`langchain-neo4j` packages must be installed manually, as above. The `ollama` package (official Python client) is also required separately for the Ollama embedder to work.
-
 > **Watch out — `mem0ai[extras]` is not for fastembed/BM25.** It's a bundle for cloud vector-store integrations (AWS Bedrock, OpenSearch, Elasticsearch) and pulls in `boto3`, `elasticsearch`, `opensearch-py`, plus older `langchain`/`langchain-community` packages. If `langgraph`/`langchain-neo4j` are installed in the same venv, this downgrades `langchain-core` and breaks them. For BM25 keyword search, install `fastembed` directly instead — see Section 7.2.1.
 
 ### 5.2 Run Neo4j locally (Docker, with APOC plugin)
 
 Graph Memory requires the **APOC** plugin enabled:
 
-```bash
+```
 mkdir -p ~/Projects/AI/ai-agents/mem0/neo4j/data ~/Projects/AI/ai-agents/mem0/neo4j/plugins
 
 docker run -d \
@@ -245,7 +240,7 @@ docker run -d \
 
 ### 5.3 Ollama models required
 
-```bash
+```
 ollama pull nomic-embed-text
 ```
 
@@ -267,7 +262,7 @@ NEO4J_PASSWORD=
 
 ### 5.5 `config.py`
 
-```python
+```
 import os
 from dotenv import load_dotenv
 from mem0 import Memory
@@ -311,14 +306,12 @@ config = {
 
 memory = Memory.from_config(config_dict=config)
 ```
-
 > `embedding_model_dims: 768` matches `nomic-embed-text`'s output size — Mem0's Qdrant default (1536) is sized for OpenAI embeddings and must be overridden or `add`/`search` will fail with a dimension mismatch.
-
 > **Important — Qdrant is running in local/embedded mode, not as a server.** Because `vector_store.config` uses `path` (not `host`/`port`), Qdrant has no separate process — it's a set of files on disk that Python opens directly. This means **only one process can have it open at a time**. Don't run a Mem0 standalone script and the CrewAI integration (Section 7) at the same time — one will fail to open the locked files.
 
 ### 5.6 Test
 
-```python
+```
 # test_mem0.py
 from config import memory
 
@@ -338,12 +331,11 @@ for hit in results["results"]:
     print(hit["memory"])
 ```
 
-```bash
+```
 python test_mem0.py
 ```
 
 Verify the graph side by opening `http://localhost:7474` and running `MATCH (n) RETURN n LIMIT 25;` — connected nodes confirm Graph Memory is writing correctly.
-
 > Note: `search()`/`get_all()` require `user_id` inside `filters={}` — passing it as a top-level kwarg (as `add()`/`delete_all()` still accept) raises a `ValueError` on current versions. This applies across `mem0ai` 2.x releases, at least down to `2.0.14`.
 
 ---
@@ -352,7 +344,7 @@ Verify the graph side by opening `http://localhost:7474` and running `MATCH (n) 
 
 `~/Projects/AI` is a git repository. `.gitignore` at its root should include:
 
-```gitignore
+```
 # Python virtual environments
 **/venv*/
 __pycache__/
@@ -371,7 +363,6 @@ ai-agents/hermes-agent/
 # Secrets
 .env
 ```
-
 > **Nested repo note:** `ai-agents/paperclip/` and `ai-agents/hermes-agent/` are each a git clone of their own upstream repo, with their own `.git`. The lines above stop the main `~/Projects/AI` repo from tracking either at all. Paperclip's `.env` is additionally covered by its *inner* repo's own `.gitignore` (Section 8.3), in case it's ever committed there directly. Hermes Agent doesn't have this issue — its config/secrets live entirely outside the repo, at `~/.hermes` (Section 9.1).
 
 ---
@@ -384,7 +375,7 @@ Gives a CrewAI agent access to the Mem0 memory set up in Section 5, so it can re
 
 Ubuntu 26.04 ships only Python 3.14 by default, which lacks pre-built wheels for several CrewAI dependencies (e.g. `tiktoken`, which requires a Rust compiler to build from source on 3.14). Python 3.12 is used instead, installed via the Deadsnakes PPA:
 
-```bash
+```
 sudo apt install software-properties-common
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt update
@@ -393,7 +384,7 @@ sudo apt install python3.12 python3.12-venv
 
 Then create the venv:
 
-```bash
+```
 mkdir -p ~/Projects/AI/ai-agents/crewai && cd ~/Projects/AI/ai-agents/crewai
 python3.12 -m venv venv
 source venv/bin/activate
@@ -403,7 +394,7 @@ source venv/bin/activate
 
 Install in separate steps (installing everything in one `pip install` line can trigger a `resolution-too-deep` error — CrewAI's dependency tree, combined with `langchain-neo4j`, is too complex for pip to solve in one pass):
 
-```bash
+```
 pip install --upgrade pip setuptools wheel
 pip install crewai
 pip install mem0ai==2.0.14
@@ -411,14 +402,13 @@ pip install python-dotenv
 pip install neo4j
 pip install langchain-neo4j
 ```
-
 > `mem0ai` is pinned to `2.0.14` here for stability, though this pin turned out not to be the fix for the integration issue (see 7.4) — the `mem0` library itself works fine with any recent 2.x version, as long as `search()`/`get_all()` calls use `filters={"user_id": ...}` (see Section 5.6's note).
 
 `mem0ai` also requires its own `.env` with `NEO4J_PASSWORD` — same value as Section 5.4, copy `~/Projects/AI/ai-agents/mem0/.env` or create a fresh one in the `crewai` folder.
 
 `crewai` installs `chromadb`, which pins `posthog<6.0.0`; `mem0ai` has no upper bound on `posthog` and pulls the latest (7.x) by default. Pin it down explicitly after installing both:
 
-```bash
+```
 pip install "posthog<6.0.0"
 ```
 
@@ -426,15 +416,15 @@ This leaves a cosmetic `pip check` warning (`mem0ai requires posthog>=7.14.0, bu
 
 #### 7.2.1 Optional extras: spaCy (entity extraction) + fastembed (BM25 keyword search)
 
-```bash
+```
 pip install "mem0ai[nlp]"
 pip install fastembed
 ```
 
 Both models download automatically on first use — no manual `spacy download` step needed: the `en_core_web_sm` spaCy model downloads the first time a tool call triggers entity extraction, and the fastembed BM25 model downloads on the first search. Confirmed working end-to-end (Section 7.3's script).
-
 > Do **not** run `pip install "mem0ai[extras]"` for this — see the warning in Section 5.1. If it's already been run by mistake, recover with:
-> ```bash
+>
+> ```
 > pip uninstall -y langchain langchain-community elasticsearch elastic-transport opensearch-py opensearch-protobufs boto3 botocore s3transfer
 > pip install --upgrade "langchain-core>=1.4.7,<2" "langchain-text-splitters>=1.1.2,<2" "posthog<6.0.0"
 > ```
@@ -448,7 +438,7 @@ Both models download automatically on first use — no manual `spacy download` s
 - A `salvar_memoria()` helper function, called manually after each `crew.kickoff()`, that writes the turn to Mem0 (`mem0_client.add(..., user_id=USER_ID)`).
 - The agent's LLM must be set **explicitly** to Ollama — `memory_config`/Mem0 setup has no effect on which LLM the *agent* itself uses to reason. Without this, CrewAI defaults to OpenAI and fails with `OPENAI_API_KEY is required`:
 
-```python
+```
 from crewai import LLM
 ollama_llm = LLM(model="ollama/qwen3:14b", base_url="http://localhost:11434")
 # ...
@@ -472,15 +462,14 @@ Full script kept alongside this README, in the same folder.
 
 ## 8. Paperclip Agent Manager (Docker)
 
-![preview](paperclip.png)
+![Paperclip](paperclip.png)
 
 Open-source orchestration platform ([paperclipai/paperclip](https://github.com/paperclipai/paperclip)) that manages a team of AI agents (CrewAI, Claude Code, Codex, etc.) like employees in a company — org chart, tickets, budgets, governance. Will also be used in the future "Get Contractors Now" project.
-
 > **Why Docker and not native (Node/pnpm):** Paperclip doesn't touch the GPU, so the reason Ollama stays native doesn't apply here. Docker was chosen for isolation and portability, matching the Open WebUI approach — the official install path builds the image locally from source (no pre-built image to just pull), so the repo still needs to be cloned either way.
 
 ### 8.1 Clone the repo
 
-```bash
+```
 cd ~/Projects/AI/ai-agents
 git clone https://github.com/paperclipai/paperclip.git
 cd paperclip
@@ -490,7 +479,7 @@ This creates a **nested git repo** inside `~/Projects/AI` — see the `.gitignor
 
 ### 8.2 Run via Docker Compose (official quickstart)
 
-```bash
+```
 cd ~/Projects/AI/ai-agents/paperclip
 BETTER_AUTH_SECRET="$(openssl rand -hex 32)" docker compose -f docker/docker-compose.quickstart.yml up -d
 ```
@@ -506,11 +495,11 @@ BETTER_AUTH_SECRET="$(openssl rand -hex 32)" docker compose -f docker/docker-com
 
 The `BETTER_AUTH_SECRET` generated above isn't saved anywhere by default. Retrieve it from the running container and persist it:
 
-```bash
+```
 docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET
 ```
 
-```bash
+```
 cd ~/Projects/AI/ai-agents/paperclip
 echo 'BETTER_AUTH_SECRET=paste_value_here' > .env
 grep -qxF '.env' .gitignore || echo '.env' >> .gitignore
@@ -518,13 +507,13 @@ grep -qxF '.env' .gitignore || echo '.env' >> .gitignore
 
 The last line adds `.env` to the *inner* Paperclip repo's own `.gitignore` (belt-and-suspenders alongside the outer repo already ignoring the whole folder — see Section 6). With `.env` in place, future restarts don't need `BETTER_AUTH_SECRET` passed manually:
 
-```bash
+```
 docker compose -f docker/docker-compose.quickstart.yml up -d
 ```
 
 ### 8.4 Keep it always running (survive reboots)
 
-```bash
+```
 docker update --restart unless-stopped docker-paperclip-1
 ```
 
@@ -536,7 +525,7 @@ Open `http://localhost:3100`. The first account created on the setup screen auto
 
 ### 8.6 Verify
 
-```bash
+```
 docker ps                                   # confirms docker-paperclip-1 is Up
 docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET   # matches the .env value
 ```
@@ -545,13 +534,17 @@ docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET   # matches the .en
 
 ## 9. Hermes Agent (Orchestrator for the CrewAI Team)
 
+![Hermes](HermesChat.png)
+
 Autonomous agent framework from Nous Research ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)), used to orchestrate/delegate work to the CrewAI team (Section 7), particularly for the future "Get Contractors Now" project. Fully local via Ollama, same as everything else in this stack.
+
+> **⚠️ Status (2026-09-27): install reverted, reinstall pending.** The install below (Sections 9.1–9.8) was completed once, but ran into a chain of problems during validation and was fully uninstalled (`hermes uninstall --yes` + `rm -rf ~/.hermes` + `rm -rf ~/Projects/AI/ai-agents/hermes-agent`). See Section 9.9 for what went wrong. The steps below are kept as a historical record of what was tried — **do not follow them as-is for the next install** without reading 9.9 first, since Section 9.2's model choice (Hermes-4-14B) is the one implicated in the main bug found.
 
 ### 9.1 Install (native)
 
 Code lives inside the project folder for organization; config/secrets/sessions stay at the tool's default `~/.hermes` (`HERMES_HOME`), since several parts of the ecosystem assume that path by convention and there's no real benefit to moving it:
 
-```bash
+```
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --dir ~/Projects/AI/ai-agents/hermes-agent --skip-setup
 source ~/.bashrc
 ```
@@ -562,28 +555,28 @@ This creates its own venv automatically (Python 3.11) and symlinks the `hermes` 
 
 Uses **Hermes-4-14B** (Q4_K_M) — Nous Research's own tool-calling/orchestration-focused fine-tune, based on Qwen 3 14B, same size class as `qwen3:14b` so it fits the existing VRAM budget. Not on the official Ollama library — pulled as a GGUF via `hf.co`:
 
-```bash
+```
 ollama run hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M
 ```
 
 ### 9.3 Setup wizard (`hermes setup`) — key choices
 
-```bash
+```
 hermes setup
 ```
 
-| Prompt | Choice | Why |
-|---|---|---|
-| Setup mode | **Full setup** | "Quick Setup" logs into the Nous Portal cloud — not wanted here |
-| Provider | **Custom (direct API)** | ⚠️ Do **not** pick "Ollama" from the list — known bug where that provider name isn't recognized internally and requests silently fall through to the cloud (OpenRouter) instead of the local Ollama |
-| Base URL | `http://localhost:11434/v1` | Ollama's OpenAI-compatible endpoint |
-| API Key | blank (or `ollama`) | Not required locally |
-| API compatibility mode | **Chat Completions** | Matches Ollama's endpoint shape; don't rely on "Auto-detect" given the provider-name bug above |
-| Model | `hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M` | Selected from the "Available models" list pulled live from Ollama |
-| Context length | leave blank | Auto-detect |
-| Reasoning effort | `medium` | Adjustable later per-session with `/reasoning <level>`, no need to re-run setup |
-| Terminal backend | **Local** | Everything runs on the same machine |
-| Messaging platforms | none selected | Not needed for CrewAI orchestration; can be added later via `hermes setup gateway` if remote control is ever wanted |
+| Prompt                 | Choice                                                  | Why                                                                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Setup mode             | **Full setup**                                          | "Quick Setup" logs into the Nous Portal cloud — not wanted here                                                                                                                                     |
+| Provider               | **Custom (direct API)**                                 | ⚠️ Do **not** pick "Ollama" from the list — known bug where that provider name isn't recognized internally and requests silently fall through to the cloud (OpenRouter) instead of the local Ollama |
+| Base URL               | `http://localhost:11434/v1`                             | Ollama's OpenAI-compatible endpoint                                                                                                                                                                 |
+| API Key                | blank (or `ollama`)                                     | Not required locally                                                                                                                                                                                |
+| API compatibility mode | **Chat Completions**                                    | Matches Ollama's endpoint shape; don't rely on "Auto-detect" given the provider-name bug above                                                                                                      |
+| Model                  | `hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M` | Selected from the "Available models" list pulled live from Ollama                                                                                                                                   |
+| Context length         | leave blank                                             | Auto-detect — ⚠️ **turned out to be a problem, see 9.9**: this model auto-detects at 40,960 tokens, below Hermes's own hard minimum of 64,000                                                       |
+| Reasoning effort       | `medium`                                                | Adjustable later per-session with `/reasoning <level>`, no need to re-run setup                                                                                                                     |
+| Terminal backend       | **Local**                                               | Everything runs on the same machine                                                                                                                                                                 |
+| Messaging platforms    | none selected                                           | Not needed for CrewAI orchestration; can be added later via `hermes setup gateway` if remote control is ever wanted                                                                                 |
 
 ### 9.4 Tools
 
@@ -595,7 +588,7 @@ Reviewed via the tools picker in the setup wizard. Turned **off**: Computer Use 
 Configure vision backend → Pick a provider and model → Local (localhost:11434) → gemma4:12b
 ```
 
-Do **not** use "Auto" here — Hermes-4-14B is text-only. ⚠️ **Known bug:** when picking a vision model for the Local provider, Hermes may list only its own main text model (falsely reporting it as vision-capable) instead of the actual multimodal models installed. If that happens, select **"Type a custom model id…"** and enter `gemma4:12b` manually — bypasses the broken auto-detected list. Root cause not yet confirmed; suspected to be related to how Ollama reports (or fails to report) the `vision` capability for models pulled via `hf.co` GGUF vs. the official library — see Pending.
+Do **not** use "Auto" here — Hermes-4-14B is text-only. ⚠️ **Known bug:** when picking a vision model for the Local provider, Hermes may list only its own main text model (falsely reporting it as vision-capable) instead of the actual multimodal models installed. If that happens, select **"Type a custom model id…"** and enter `gemma4:12b` manually — bypasses the broken auto-detected list. ⚠️ **This turned out not to be fully reliable either — see 9.9**: even after manually setting the model id, a later session hit `AuxiliaryClientUnavailable: No LLM provider configured for task=vision provider=auto`, meaning the manual choice wasn't actually persisted to `config.yaml` correctly. Root cause not confirmed — suspected to be related to how Ollama reports (or fails to report) the `vision` capability for models pulled via `hf.co` GGUF vs. the official library.
 
 ### 9.6 Search provider
 
@@ -605,7 +598,7 @@ Selected **DuckDuckGo (ddgs)** — free, no API key, no extra service to stand u
 
 With Hermes (Hermes-4-14B), its vision model (`gemma4:12b`), and whichever model each CrewAI agent uses all sharing the same 16GB GPU, Ollama must never try to keep more than one model loaded at once — otherwise it either exhausts VRAM or silently falls back to slow CPU inference. Ollama already auto-unloads/loads models per request; this setting just prevents it from trying to keep several resident at the same time:
 
-```bash
+```
 sudo mkdir -p /etc/systemd/system/ollama.service.d
 sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null << 'EOF'
 [Service]
@@ -617,23 +610,49 @@ sudo systemctl restart ollama
 
 Verify it took effect:
 
-```bash
+```
 systemctl show ollama --property=Environment
 ```
 
 Should include `OLLAMA_MAX_LOADED_MODELS=1` in the output.
+
+> **✅ This setting was kept even after the Hermes uninstall (Section 9.9)** — it's a global Ollama setting, not Hermes-specific, and is generally good practice for this hardware (see Section 9.7's own note at the bottom of this guide).
 
 > The corollary on the CrewAI side, once a Crew script exists: pass `Process.sequential` (not the default parallel/hierarchical execution) to `Crew(...)`, so agents never call their models at the same time and fight over the one-model-at-a-time VRAM budget above.
 
 ### 9.8 Troubleshooting notes (from setting this up)
 
 - **`sudo systemctl edit ollama.service` doesn't save the edit** (reopening shows the file unchanged): check for a stale editor lock file in the same drop-in folder, e.g. `/etc/systemd/system/ollama.service.d/.#override.conf...` — a leftover from a `nano` session that didn't close cleanly. It confuses `systemctl edit` into not writing the real file. Fix: write the override directly instead of through the interactive editor, then remove the lock:
-  ```bash
-  sudo rm "/etc/systemd/system/ollama.service.d/.#override.conf<random-suffix>"
-  ```
-  (see 9.7 for the direct-write command)
+
+```
+sudo rm "/etc/systemd/system/ollama.service.d/.#override.conf<random-suffix>"
+```
+
+(see 9.7 for the direct-write command)
+
 - **Ctrl+C during `hermes setup` cancels the *entire* wizard**, not just the current prompt — it falls back to a Nous Portal cloud login flow. If that happens: `Ctrl+C` again to stop the login polling, then re-run `hermes setup` from scratch (use arrow keys/Enter/Space/Esc to navigate — avoid Ctrl+C anywhere in the wizard).
 - **Vision model list shows the wrong model** — see 9.5.
+
+### 9.9 Update (2026-09-27) — validation problems, full uninstall
+
+During validation (before ever getting to the CrewAI orchestration itself), a chain of problems surfaced with the Hermes-4-14B model specifically:
+
+1. **Context window below Hermes's minimum**: Hermes-4-14B auto-detects at 40,960 tokens; Hermes Agent hard-requires ≥64,000 to even start a session. Worked around by manually setting `model.context_length: 65536` and `model.ollama_num_ctx: 65536` in `~/.hermes/config.yaml` — but this means the model runs with a declared context (65,536) beyond what it was actually trained on (40,960), a real quality trade-off for any long conversation.
+2. **Tool-call loop / malformed `tool_call`**: even simple prompts ("que horas são?") caused Hermes to loop indefinitely trying (and failing) to invoke its internal `tool_call` bridge function. Root cause identified: **[github.com/NousResearch/hermes-agent#110442](https://github.com/NousResearch/hermes-agent/issues/110442)** — Qwen-family models (and Hermes/Nous's own function-calling format) use `<tool_call>` as their *native* delimiter for signaling a tool call, which collides with Hermes Agent's bridge tool literally named `tool_call`. Hermes-4-14B is built on a Qwen3 base, so it's exposed to this collision from both directions at once. Confirmed via a direct comparison: swapping the orchestrator model to `qwen3:14b` (already installed, no Hermes-specific fine-tune) made the same prompts work immediately, with no loop.
+   - Fix identified upstream: **[PR #110452](https://github.com/NousResearch/hermes-agent/pull/110452)** renames the bridge tool from `tool_call` to `invoke_tool`, verified working live with `qwen3:14b` via Ollama. **Not confirmed merged/released as of 2026-09-27.**
+3. **Vision analysis failure**: even with the vision backend manually set to `gemma4:12b` (Section 9.5), a live attempt to analyze an attached image failed with `AuxiliaryClientUnavailable: No LLM provider configured for task=vision provider=auto` (from `~/.hermes/logs/agent.log`) — the manual vision-model choice wasn't actually being applied.
+
+**Decision:** rather than keep patching a first install with an increasingly fragile config, the whole Hermes Agent install was reverted:
+
+```
+hermes uninstall --yes
+rm -rf ~/.hermes
+rm -rf ~/Projects/AI/ai-agents/hermes-agent
+```
+
+`hermes uninstall` removed the gateway systemd service, CLI symlinks (`hermes`, `hermes-acp`, `hermes-agent`), and PATH entries in `.bashrc`/`.profile` on its own; it preserves `~/.hermes` (config/data) by default, hence the explicit `rm -rf` to remove that too. Confirmed clean via `which hermes` (no output). `OLLAMA_MAX_LOADED_MODELS=1` (Section 9.7) was kept — it's unrelated to Hermes specifically.
+
+**Plan:** reinstall from scratch, following a different tutorial/guide than Sections 9.1–9.8 above. Before reusing Hermes-4-14B as the orchestrator model, check whether issue #110442 / PR #110452 has shipped in an official release (`hermes doctor`, changelog, or just try again). If not resolved yet, default to `qwen3:14b` as the orchestrator instead — already confirmed to work cleanly with Hermes Agent's tool-calling.
 
 ---
 
@@ -646,10 +665,10 @@ Should include `OLLAMA_MAX_LOADED_MODELS=1` in the output.
 - [ ] **`MEM0_TELEMETRY=false`** (optional, not yet applied) — would remove `mem0ai`'s reliance on `posthog` entirely, eliminating even the theoretical risk noted in 7.4. Low priority since the current setup is already confirmed working.
 - [x] **Paperclip agent manager** — installed and running via Docker (Section 8); admin account created.
 - [ ] **Paperclip LAN access** — reachable from other devices at home, not yet configured (Section 8 only covers `localhost`).
-- [x] **Hermes agent for CrewAI team management** — installed and configured (Section 9): Hermes-4-14B via Ollama, tools/vision/search provider set up, `OLLAMA_MAX_LOADED_MODELS=1` applied.
-- [ ] **`Process.sequential` in CrewAI** — apply once the actual Crew script for Hermes to orchestrate is written (Section 9.7).
-- [ ] **Test `/reasoning high` in Hermes** — confirm whether raising reasoning effort has any perceptible effect given the Ollama/Chat-Completions backend (not guaranteed to be honored the way it would be on a native provider).
-- [ ] **Hermes vision-model auto-detection bug** (Section 9.5) — investigate root cause; suspected that models pulled via `hf.co` GGUF don't get the `vision` capability properly registered with Ollama, unlike models pulled from the official library.
+- [ ] **Hermes Agent — reinstall clean** — first install fully reverted after validation problems (Section 9.9); reinstall following a different tutorial. Default to `qwen3:14b` as orchestrator unless issue #110442 is confirmed fixed upstream.
+- [ ] **`Process.sequential` in CrewAI** — apply once the actual Crew script for Hermes to orchestrate is written (Section 9.7). Still pending — no Crew script written yet.
+- [ ] **Test `/reasoning high` in Hermes** — confirm whether raising reasoning effort has any perceptible effect given the Ollama/Chat-Completions backend (not guaranteed to be honored the way it would be on a native provider). Still pending post-reinstall.
+- [ ] **Hermes vision-model auto-detection bug** (Section 9.5) — investigate root cause; suspected that models pulled via `hf.co` GGUF don't get the `vision` capability properly registered with Ollama, unlike models pulled from the official library. Compounded by the config-persistence issue found in 9.9 — re-verify after reinstall.
 - [ ] **Hermes remote control via chat platform** — evaluate connecting Hermes to a messaging platform (Telegram, Slack, Discord, etc.) via `hermes setup gateway`. Not configured on initial install (Section 9.3).
 - [ ] **SearXNG instead of DuckDuckGo for Hermes search** — more consistent with the fully self-hosted approach, but requires standing up another Docker container; deferred (Section 9.6).
 - [ ] **Qdrant as a standalone server** (instead of local/embedded mode) — so it can be shared across more than one project at once. Currently each project that uses Mem0 (Section 5) has its own embedded Qdrant.
@@ -664,5 +683,5 @@ Should include `OLLAMA_MAX_LOADED_MODELS=1` in the output.
 - Section 3.5 (remote access) is a placeholder until that setup is actually done.
 - Section 7 (CrewAI) runs in its own venv, separate from Mem0's (Section 5) — the two must never have the local Qdrant data open at the same time (see the note in 5.6).
 - Section 8 (Paperclip) is a nested git repo inside `~/Projects/AI` — see the `.gitignore` note in Section 6 before running any `git` commands at the repo root.
-- Section 9 (Hermes Agent) is also a nested git repo inside `~/Projects/AI` (same `.gitignore` note applies), but unlike Paperclip its config/secrets live entirely outside the repo at `~/.hermes`.
-- The `OLLAMA_MAX_LOADED_MODELS=1` systemd override (Section 9.7) is a global Ollama setting, not specific to Hermes — it affects every model call from every section of this guide, keeping only one model resident in VRAM at a time.
+- Section 9 (Hermes Agent) is also a nested git repo inside `~/Projects/AI` (same `.gitignore` note applies), but unlike Paperclip its config/secrets live entirely outside the repo at `~/.hermes`. **As of 2026-09-27, Section 9's install has been reverted — see 9.9.**
+- The `OLLAMA_MAX_LOADED_MODELS=1` systemd override (Section 9.7) is a global Ollama setting, not specific to Hermes — it affects every model call from every section of this guide, keeping only one model resident in VRAM at a time. Kept in place after the Hermes uninstall.
