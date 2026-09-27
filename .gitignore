@@ -1,16 +1,17 @@
-cat > ~/Projects/AI/.gitignore << 'EOF'
-# Ambientes virtuais Python
+# Python virtual environments
 **/venv*/
 __pycache__/
 *.pyc
 
-# Bancos de dados locais (dados, nao codigo-fonte)
+# Local databases (data, not source)
 ai-agents/mem0/neo4j/data/
 ai-agents/mem0/neo4j/plugins/
 ai-agents/mem0/qdrant_data/
 
-# Segredos
-.env
-EOF
+# Nested git repos (Paperclip and Hermes Agent are each cloned from their own
+# upstream repo — see Sections 8 and 9)
 ai-agents/paperclip/
 ai-agents/hermes-agent/
+
+# Secrets
+.env

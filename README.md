@@ -2,6 +2,22 @@
 
 Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 
+## Table of Contents
+
+- [Hardware Reference](#hardware-reference) — machine specs, disk layout
+- [0. Before You Start](#0-before-you-start) — git setup, cloning this repo, what is *not* in the repo (data, secrets)
+- [1. NVIDIA Driver & CUDA Setup](#1-nvidia-driver--cuda-setup) — driver install, `nvidia-smi`, optional CUDA Toolkit
+- [2. Ollama Installation](#2-ollama-installation) — install, model storage path, model list, global setting `OLLAMA_MAX_LOADED_MODELS`
+- [3. Open WebUI (Docker)](#3-open-webui-docker) — Docker install, container, restart policy, LAN/remote access, users
+- [4. Post-Install Checklist](#4-post-install-checklist) — verification for the base stack and the agents stack
+- [5. Mem0 — Agent Memory Layer](#5-mem0--agent-memory-layer-venv-graph-memory) — venv, Neo4j + APOC, embeddings model, `.env`, `config.py`, test
+- [6. Git — `~/Projects/AI` repo](#6-git--projectsai-repo) — `.gitignore`, nested repos
+- [7. CrewAI ↔ Mem0 Integration](#7-crewai--mem0-integration-venv-manual-tool) — Python 3.12 venv, dependencies and pins, integration script, troubleshooting
+- [8. Paperclip Agent Manager](#8-paperclip-agent-manager-docker) — clone, `.env` secret, Docker Compose, restart policy, first login, verify, updating
+- [9. Hermes Agent](#9-hermes-agent-orchestrator-for-the-crewai-team) — ⚠️ install reverted: setup record, troubleshooting, why it was uninstalled (9.9)
+- [Pending / To Investigate](#pending--to-investigate) — open items
+- [Notes](#notes) — cross-cutting reminders
+
 ## Hardware Reference
 
 | Component   | Spec                                                                   |
@@ -16,15 +32,44 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 
 ---
 
+## 0. Before You Start
+
+### 0.1 Clone this repo
+
+The scripts and config files referenced in this guide (e.g. `ai-agents/mem0/config.py`, `ai-agents/crewai/crewai_mem0_example.py`) live in this repo. On a fresh install, clone it first:
+
+```
+sudo apt install git
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+mkdir -p ~/Projects
+git clone https://github.com/rizzo9555/AI.git ~/Projects/AI
+```
+
+### 0.2 What is *not* in this repo
+
+By design (see `.gitignore`, Section 6), the repo holds no data and no secrets. These must be backed up **before** wiping the Ubuntu partition, and restored afterwards:
+
+- Open WebUI data — Docker volume `open-webui` (users, chats, settings)
+- Mem0 memories — `ai-agents/mem0/neo4j/data/` (Neo4j) and `ai-agents/mem0/qdrant_data/` (Qdrant)
+- Paperclip data — `ai-agents/paperclip/data/`
+- Every `.env` file (Neo4j password, Paperclip's `BETTER_AUTH_SECRET`) — also keep these values in a password manager
+- Optional: Ollama models (`/usr/share/ollama/.ollama/models`, ~110GB) — re-downloadable, just slow
+
+> The backup/restore procedure itself isn't written yet — see Pending.
+
+---
+
 ## 1. NVIDIA Driver & CUDA Setup
 
 Install the latest recommended NVIDIA driver:
 
 ```
 sudo apt update
-sudo ubuntu-drivers autoinstall
+sudo ubuntu-drivers install
 sudo reboot
 ```
+> `ubuntu-drivers install` is the current form of the older `ubuntu-drivers autoinstall` (deprecated alias, same result).
 
 Verify the driver installation:
 
@@ -32,14 +77,11 @@ Verify the driver installation:
 nvidia-smi
 ```
 
-Install the CUDA Toolkit (latest version, via the official NVIDIA repository):
+### Optional: CUDA Toolkit
 
-```
-# Follow the official instructions for your Ubuntu version:
-# https://developer.nvidia.com/cuda-downloads
-```
+**Not needed by anything in this guide** — Ollama ships its own CUDA runtime libraries, and nothing here compiles CUDA code. Only install it if a future tool needs `nvcc`. If so, follow NVIDIA's instructions (https://developer.nvidia.com/cuda-downloads) but install only the **`cuda-toolkit`** package — not the `cuda` meta-package, which also installs NVIDIA's own driver and can conflict with the one installed by `ubuntu-drivers` above.
 
-Verify CUDA:
+Verify:
 
 ```
 nvcc --version
@@ -82,12 +124,13 @@ ollama pull deepseek-r1:14b
 ollama pull gemma4:26b
 ollama pull gemma4:12b
 ollama pull qwen3:14b
+ollama pull nomic-embed-text   # embeddings model required by Mem0 (Section 5.3)
 ```
 
-Plus one model pulled via Hugging Face GGUF instead of the Ollama library (used by Hermes Agent, Section 9):
+Plus one model pulled via Hugging Face GGUF instead of the Ollama library. **Currently unused** — it was the orchestrator model of the first Hermes Agent install, which was reverted (Section 9.9); still installed as of 2026-09-27. On a reinstall, only pull it if Hermes-4-14B is being retried:
 
 ```
-ollama run hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M
+ollama pull hf.co/bartowski/NousResearch_Hermes-4-14B-GGUF:Q4_K_M
 ```
 
 Verify installed models:
@@ -95,6 +138,30 @@ Verify installed models:
 ```
 ollama list
 ```
+
+Expected: **10 models** (9 from the Ollama library + the Hermes GGUF).
+
+### 2.3 Global Setting: `OLLAMA_MAX_LOADED_MODELS=1`
+
+Keeps only one model resident in VRAM at a time, so the 16GB GPU is never shared by two models (which would either exhaust VRAM or push inference onto the much slower CPU). Ollama still loads/unloads models automatically per request. First introduced during the Hermes Agent setup (Section 9.7), but it's global — it applies to every section of this guide and was kept after the Hermes uninstall.
+
+```
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null << 'EOF'
+[Service]
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+```
+
+Verify it took effect (output should include `OLLAMA_MAX_LOADED_MODELS=1`):
+
+```
+systemctl show ollama --property=Environment
+```
+> `tee` **overwrites** the whole `override.conf`. If more Ollama variables are added later, put them all in this same file, one `Environment=` line each.
+> Trade-off to watch: Mem0 (Sections 5 and 7) uses `nomic-embed-text` for embeddings and `qwen3:14b` for reasoning, so under this limit Ollama swaps them in and out of VRAM on every memory search/add. See Pending.
 
 ---
 
@@ -141,7 +208,7 @@ docker run -d \
   --network=host \
   -v open-webui:/app/backend/data \
   -e OLLAMA_BASE_URL=http://127.0.0.1:11434 \
-  --restart always \
+  --restart unless-stopped \
   ghcr.io/open-webui/open-webui:main
 ```
 
@@ -151,6 +218,7 @@ Access the interface at:
 http://localhost:8080
 ```
 > Note: `--network=host` is Linux-specific and is why the port is 8080 directly (no `-p` mapping) rather than remapped to 3000 as on Mac/Windows setups.
+> **Restart policy — standard for every container in this guide: `unless-stopped`.** The container comes back after a crash or a reboot, but stays down after a manual `docker stop`. (`always` would bring it back on the next Docker/machine restart even after a manual stop.) Standardized on 2026-09-27; an existing container can be switched without recreating it: `docker update --restart unless-stopped open-webui`.
 
 ### 3.3 Verify
 
@@ -174,6 +242,7 @@ sudo ufw status
 sudo ufw allow 8080/tcp   # if ufw is active and the port isn't allowed
 ```
 > Consider setting a DHCP reservation for this machine on the router so the local IP doesn't change on reboot.
+> **ufw only governs Open WebUI here because it uses the host network.** Containers that publish ports with `-p` (Neo4j, Paperclip) bypass ufw entirely — Docker writes its own iptables rules — which is why Neo4j is bound to `127.0.0.1` in Section 5.2.
 
 ### 3.5 Remote Access (internet)
 
@@ -187,14 +256,28 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 
 ## 4. Post-Install Checklist
 
+**Base stack (Sections 1–3):**
+
 - [ ] `nvidia-smi` shows the RTX 4080 SUPER correctly
-- [ ] `ollama list` shows all 8 models
+- [ ] `ollama list` shows all 10 models (Section 2.2)
+- [ ] `systemctl show ollama --property=Environment` includes `OLLAMA_MAX_LOADED_MODELS=1` (Section 2.3)
 - [ ] `sudo systemctl is-enabled docker` returns `enabled`
 - [ ] Open WebUI loads at `http://localhost:8080`
 - [ ] Open WebUI can see and query the Ollama models
 - [ ] GPU usage confirmed during inference (`nvidia-smi` while running a prompt)
 - [ ] Open WebUI reachable from another device via `http://<LOCAL_IP>:8080`
 - [ ] Admin account created; additional family user accounts added
+
+**Agents stack (Sections 5–8)** — check after finishing those sections:
+
+- [ ] Neo4j Browser loads at `http://localhost:7474`, and the Section 5.6 test prints the stored memory (`venv-mem0` active)
+- [ ] `crewai_mem0_example.py` completes both rounds (Section 7.3, CrewAI `venv` active)
+- [ ] Paperclip loads at `http://localhost:3100`, and the checks in Section 8.6 print `ENV OK` and `SECRET MATCHES`
+- [ ] Every container uses the `unless-stopped` restart policy:
+
+```
+docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui neo4j-mem0 docker-paperclip-1
+```
 
 ---
 
@@ -212,6 +295,7 @@ pip install mem0ai ollama neo4j langchain-neo4j python-dotenv
 ```
 > Note: as of `mem0ai` 2.2.0, the `[graph]` install extra was dropped — the `neo4j`/`langchain-neo4j` packages must be installed manually, as above. The `ollama` package (official Python client) is also required separately for the Ollama embedder to work.
 > **Watch out — `mem0ai[extras]` is not for fastembed/BM25.** It's a bundle for cloud vector-store integrations (AWS Bedrock, OpenSearch, Elasticsearch) and pulls in `boto3`, `elasticsearch`, `opensearch-py`, plus older `langchain`/`langchain-community` packages. If `langgraph`/`langchain-neo4j` are installed in the same venv, this downgrades `langchain-core` and breaks them. For BM25 keyword search, install `fastembed` directly instead — see Section 7.2.1.
+> **Version drift (pending):** this venv installs `mem0ai` unpinned (2.2.0 as of 2026-09-27), while the CrewAI venv pins `2.0.14` (Section 7.2) — and both read/write the same Qdrant and Neo4j data. Works so far; aligning them is listed under Pending.
 
 ### 5.2 Run Neo4j locally (Docker, with APOC plugin)
 
@@ -222,21 +306,26 @@ mkdir -p ~/Projects/AI/ai-agents/mem0/neo4j/data ~/Projects/AI/ai-agents/mem0/ne
 
 docker run -d \
   --name neo4j-mem0 \
-  -p 7474:7474 -p 7687:7687 \
+  -p 127.0.0.1:7474:7474 -p 127.0.0.1:7687:7687 \
   -v ~/Projects/AI/ai-agents/mem0/neo4j/data:/data \
   -v ~/Projects/AI/ai-agents/mem0/neo4j/plugins:/plugins \
   -e NEO4J_AUTH=neo4j/CHANGE_ME_ON_FIRST_BOOT \
   -e NEO4J_apoc_export_file_enabled=true \
   -e NEO4J_apoc_import_file_enabled=true \
   -e NEO4J_apoc_import_file_use__neo4j__config=true \
-  -e NEO4JLABS_PLUGINS='["apoc"]' \
-  --restart always \
-  neo4j:latest
+  -e NEO4J_PLUGINS='["apoc"]' \
+  --restart unless-stopped \
+  neo4j:2026.09.0
 ```
 
 - Port `7474`: Neo4j Browser (`http://localhost:7474`)
 - Port `7687`: Bolt protocol (used by Mem0 to connect)
 - `NEO4J_AUTH` only sets the password on **first boot of an empty data volume**. To change the password later without losing data, log into the Browser and run: `ALTER CURRENT USER SET PASSWORD FROM 'old' TO 'new';`
+- `127.0.0.1:` in front of each port — only this machine can reach Neo4j. Mem0 connects via `localhost`, so nothing changes for it. Without the prefix, Docker opens the ports to the whole LAN regardless of ufw (see 3.4).
+- `NEO4J_PLUGINS` — current variable name. The older `NEO4JLABS_PLUGINS` (Neo4j 4.x) still works but logs a rename warning on every start.
+- `neo4j:2026.09.0` — pinned to the version in use as of 2026-09-27 (`docker exec neo4j-mem0 neo4j --version`) instead of `latest`, so a reinstall doesn't silently jump to a newer release. Upgrade deliberately.
+
+> The container currently running was created with the earlier flags (`NEO4JLABS_PLUGINS`, ports on all interfaces, `neo4j:latest`; restart policy later switched to `unless-stopped` via `docker update`). Recreating it with the command above is listed under Pending — the data is safe either way, since it lives in the bind-mounted `neo4j/data` folder.
 
 ### 5.3 Ollama models required
 
@@ -342,7 +431,7 @@ Verify the graph side by opening `http://localhost:7474` and running `MATCH (n) 
 
 ## 6. Git — `~/Projects/AI` repo
 
-`~/Projects/AI` is a git repository. `.gitignore` at its root should include:
+`~/Projects/AI` is a git repository (cloned in Section 0.1). Its root `.gitignore` contains:
 
 ```
 # Python virtual environments
@@ -363,7 +452,8 @@ ai-agents/hermes-agent/
 # Secrets
 .env
 ```
-> **Nested repo note:** `ai-agents/paperclip/` and `ai-agents/hermes-agent/` are each a git clone of their own upstream repo, with their own `.git`. The lines above stop the main `~/Projects/AI` repo from tracking either at all. Paperclip's `.env` is additionally covered by its *inner* repo's own `.gitignore` (Section 8.3), in case it's ever committed there directly. Hermes Agent doesn't have this issue — its config/secrets live entirely outside the repo, at `~/.hermes` (Section 9.1).
+> **Nested repo note:** `ai-agents/paperclip/` and `ai-agents/hermes-agent/` are each a git clone of their own upstream repo, with their own `.git`. The lines above stop the main `~/Projects/AI` repo from tracking either at all. Paperclip's own upstream `.gitignore` also already ignores its `.env` and `data/`, so neither can be committed by accident from inside that repo either. Hermes Agent doesn't have this issue — its config/secrets live entirely outside the repo, at `~/.hermes` (Section 9.1).
+> Fixed 2026-09-27: the committed `.gitignore` used to contain the literal `cat > … << 'EOF'` and `EOF` lines of the heredoc command that was meant to *create* it. The heredoc is a terminal command — only the lines between those two markers belong in the file.
 
 ---
 
@@ -404,7 +494,7 @@ pip install langchain-neo4j
 ```
 > `mem0ai` is pinned to `2.0.14` here for stability, though this pin turned out not to be the fix for the integration issue (see 7.4) — the `mem0` library itself works fine with any recent 2.x version, as long as `search()`/`get_all()` calls use `filters={"user_id": ...}` (see Section 5.6's note).
 
-`mem0ai` also requires its own `.env` with `NEO4J_PASSWORD` — same value as Section 5.4, copy `~/Projects/AI/ai-agents/mem0/.env` or create a fresh one in the `crewai` folder.
+`mem0ai` also requires its own `.env` with `NEO4J_PASSWORD` — same value as Section 5.4, copy `~/Projects/AI/ai-agents/mem0/.env` or create a fresh one in the `crewai` folder. A `.env.example` (no real value) is committed in the `crewai` folder as a template.
 
 `crewai` installs `chromadb`, which pins `posthog<6.0.0`; `mem0ai` has no upper bound on `posthog` and pulls the latest (7.x) by default. Pin it down explicitly after installing both:
 
@@ -417,9 +507,10 @@ This leaves a cosmetic `pip check` warning (`mem0ai requires posthog>=7.14.0, bu
 #### 7.2.1 Optional extras: spaCy (entity extraction) + fastembed (BM25 keyword search)
 
 ```
-pip install "mem0ai[nlp]"
+pip install "mem0ai[nlp]==2.0.14"
 pip install fastembed
 ```
+> Same `mem0ai` pin as in 7.2 — keeps pip from switching the version while adding the extra.
 
 Both models download automatically on first use — no manual `spacy download` step needed: the `en_core_web_sm` spaCy model downloads the first time a tool call triggers entity extraction, and the fastembed BM25 model downloads on the first search. Confirmed working end-to-end (Section 7.3's script).
 > Do **not** run `pip install "mem0ai[extras]"` for this — see the warning in Section 5.1. If it's already been run by mistake, recover with:
@@ -445,7 +536,7 @@ ollama_llm = LLM(model="ollama/qwen3:14b", base_url="http://localhost:11434")
 agent = Agent(..., llm=ollama_llm, tools=[BuscarMemoriaTool()])
 ```
 
-Full script kept alongside this README, in the same folder.
+The full script is committed in this repo at `ai-agents/crewai/crewai_mem0_example.py`.
 
 ### 7.4 Troubleshooting notes (from setting this up)
 
@@ -477,39 +568,34 @@ cd paperclip
 
 This creates a **nested git repo** inside `~/Projects/AI` — see the `.gitignore` note in Section 6.
 
-### 8.2 Run via Docker Compose (official quickstart)
+### 8.2 Create `.env` with the auth secret
+
+`BETTER_AUTH_SECRET` (session/auth signing key) is required — the quickstart compose file refuses to start without it. Generate it once and keep it in `.env` at the repo root:
 
 ```
 cd ~/Projects/AI/ai-agents/paperclip
-BETTER_AUTH_SECRET="$(openssl rand -hex 32)" docker compose -f docker/docker-compose.quickstart.yml up -d
+echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" > .env
 ```
 
-- `BETTER_AUTH_SECRET` is required (session/auth signing key) and is only used inline here on first run.
-- First run builds the image from the repo's `Dockerfile` (slower); later runs reuse the built image.
-- Persistent data (embedded PostgreSQL, uploads, secrets key, agent workspace data) lives under `docker/data/docker-paperclip/` inside the repo folder — already covered by the `.gitignore` entry in Section 6.
+- On a reinstall, restore the **old** value from backup instead of generating a new one — a new secret at least invalidates every existing login session.
+- `.env` is already ignored by Paperclip's own upstream `.gitignore`, and the outer repo ignores the whole folder (Section 6).
+
+> History: the current install (2026-09-25) passed the secret inline on the first `docker compose up` and saved it to `.env` afterwards, reading it back with `docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET`. Same end result.
+
+### 8.3 Run via Docker Compose (official quickstart)
+
+```
+cd ~/Projects/AI/ai-agents/paperclip
+docker compose --env-file .env -f docker/docker-compose.quickstart.yml up -d
+```
+
+- **`--env-file .env` is required.** With `-f docker/...`, Compose looks for `.env` in the compose file's own folder (`docker/`), not in the current folder — without the flag it fails with `required variable BETTER_AUTH_SECRET is missing a value` (confirmed 2026-09-27).
+- First run builds the image from the repo's `Dockerfile` (slower); later runs reuse the built image (see 8.7 for updates).
+- Persistent data (embedded PostgreSQL, uploads, secrets key, agent workspace data) lives under `data/docker-paperclip/` at the repo root — the compose file's default `../data/docker-paperclip`, resolved from `docker/`. Ignored by upstream's `.gitignore` (`data/`) and by the outer repo (Section 6).
 - Access at `http://localhost:3100`.
+- Port 3100 is published on all interfaces, so it's open to the LAN regardless of ufw (see 3.4). Paperclip itself still rejects hostnames other than `localhost` until LAN access is configured (see Pending).
 
-> **Container name:** Compose names it `docker-paperclip-1` (derived from the project folder + service name), **not** `paperclip`. Use the real name for `docker exec`/`docker update` below — check with `docker ps` if unsure.
-
-### 8.3 Persist the secret in `.env`
-
-The `BETTER_AUTH_SECRET` generated above isn't saved anywhere by default. Retrieve it from the running container and persist it:
-
-```
-docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET
-```
-
-```
-cd ~/Projects/AI/ai-agents/paperclip
-echo 'BETTER_AUTH_SECRET=paste_value_here' > .env
-grep -qxF '.env' .gitignore || echo '.env' >> .gitignore
-```
-
-The last line adds `.env` to the *inner* Paperclip repo's own `.gitignore` (belt-and-suspenders alongside the outer repo already ignoring the whole folder — see Section 6). With `.env` in place, future restarts don't need `BETTER_AUTH_SECRET` passed manually:
-
-```
-docker compose -f docker/docker-compose.quickstart.yml up -d
-```
+> **Container name:** Compose names it `docker-paperclip-1` (derived from the compose file's folder, `docker`, + the service name), **not** `paperclip`. Use the real name for `docker exec`/`docker update` below — check with `docker ps` if unsure.
 
 ### 8.4 Keep it always running (survive reboots)
 
@@ -517,7 +603,9 @@ docker compose -f docker/docker-compose.quickstart.yml up -d
 docker update --restart unless-stopped docker-paperclip-1
 ```
 
-Matches the Open WebUI behavior: restarts automatically when Docker starts (including after a machine reboot) or after a crash. Only a manual `docker stop docker-paperclip-1` keeps it down.
+Same policy as every container in this guide (see 3.2): restarts automatically after a crash or a reboot; only a manual `docker stop docker-paperclip-1` keeps it down.
+
+> The quickstart compose file has no `restart:` key, so this setting is **lost whenever Compose recreates the container** (e.g. after an update, 8.7). Re-run the command above after every recreate.
 
 ### 8.5 First login
 
@@ -526,9 +614,26 @@ Open `http://localhost:3100`. The first account created on the setup screen auto
 ### 8.6 Verify
 
 ```
+cd ~/Projects/AI/ai-agents/paperclip
 docker ps                                   # confirms docker-paperclip-1 is Up
-docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET   # matches the .env value
+docker compose --env-file .env -f docker/docker-compose.quickstart.yml config > /dev/null && echo "ENV OK"
+diff <(grep BETTER_AUTH_SECRET .env) <(docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET) > /dev/null && echo "SECRET MATCHES" || echo "SECRET DIFFERS"
 ```
+
+The last two lines check the setup without printing the secret: `ENV OK` means Compose can read `.env`; `SECRET MATCHES` means `.env` holds the same value the running container uses.
+
+### 8.7 Updating Paperclip
+
+> Not yet exercised on this install.
+
+```
+cd ~/Projects/AI/ai-agents/paperclip
+git pull
+docker compose --env-file .env -f docker/docker-compose.quickstart.yml up -d --build
+docker update --restart unless-stopped docker-paperclip-1
+```
+
+`--build` forces a rebuild of the image from the updated source — without it, Compose keeps using the old image. The last line restores the restart policy (see 8.4).
 
 ---
 
@@ -664,7 +769,7 @@ rm -rf ~/Projects/AI/ai-agents/hermes-agent
 - [x] **`chromadb`/`posthog` version conflict** (Section 7.4) — resolved by pinning `posthog<6.0.0`; residual `pip check` warning from `mem0ai`'s side confirmed harmless in practice.
 - [ ] **`MEM0_TELEMETRY=false`** (optional, not yet applied) — would remove `mem0ai`'s reliance on `posthog` entirely, eliminating even the theoretical risk noted in 7.4. Low priority since the current setup is already confirmed working.
 - [x] **Paperclip agent manager** — installed and running via Docker (Section 8); admin account created.
-- [ ] **Paperclip LAN access** — reachable from other devices at home, not yet configured (Section 8 only covers `localhost`).
+- [ ] **Paperclip LAN access** — reachable from other devices at home, not yet configured (Section 8 only covers `localhost`). Port 3100 is already open to the LAN (8.3); what's missing is telling Paperclip to accept the LAN hostname. The compose file reads `PAPERCLIP_ALLOWED_HOSTNAMES` (and `PAPERCLIP_PUBLIC_URL`) — likely fix: add `PAPERCLIP_ALLOWED_HOSTNAMES=<LOCAL_IP>` to `.env`, then recreate the container (8.3 + 8.4). Untested.
 - [ ] **Hermes Agent — reinstall clean** — first install fully reverted after validation problems (Section 9.9); reinstall following a different tutorial. Default to `qwen3:14b` as orchestrator unless issue #110442 is confirmed fixed upstream.
 - [ ] **`Process.sequential` in CrewAI** — apply once the actual Crew script for Hermes to orchestrate is written (Section 9.7). Still pending — no Crew script written yet.
 - [ ] **Test `/reasoning high` in Hermes** — confirm whether raising reasoning effort has any perceptible effect given the Ollama/Chat-Completions backend (not guaranteed to be honored the way it would be on a native provider). Still pending post-reinstall.
@@ -673,6 +778,15 @@ rm -rf ~/Projects/AI/ai-agents/hermes-agent
 - [ ] **SearXNG instead of DuckDuckGo for Hermes search** — more consistent with the fully self-hosted approach, but requires standing up another Docker container; deferred (Section 9.6).
 - [ ] **Qdrant as a standalone server** (instead of local/embedded mode) — so it can be shared across more than one project at once. Currently each project that uses Mem0 (Section 5) has its own embedded Qdrant.
 - [ ] **MCP (Model Context Protocol) in the AI project** — evaluate and integrate MCP into the stack. Not yet investigated — placeholder for future steps.
+- [ ] **Backup & restore procedure** — write and test it for everything listed in Section 0.2 before the next Ubuntu wipe. Highest priority for a reinstall guide.
+- [ ] **Align `mem0ai` versions** — `venv-mem0` has 2.2.0 (unpinned), the CrewAI venv has 2.0.14 (pinned); both share the same Qdrant/Neo4j data (see note in 5.1).
+- [ ] **Recreate `neo4j-mem0` with the Section 5.2 command** — the running container still has the old flags (`NEO4JLABS_PLUGINS`, ports open on all interfaces, `neo4j:latest`). Data is safe in the bind mount.
+- [ ] **Lock files per venv** — `pip freeze > requirements.lock.txt` in each venv, committed, so a reinstall gets exactly the same package versions (`crewai` is currently unpinned).
+- [ ] **Hardcoded `/home/guilherme/...` paths** in `ai-agents/mem0/config.py` and `ai-agents/crewai/crewai_mem0_example.py` — switch to paths relative to the script (`Path(__file__)`) so a different username doesn't break them. Also consolidate the Mem0 config, currently duplicated in both files with small differences.
+- [ ] **Test `OLLAMA_MAX_LOADED_MODELS=2`** — under `=1`, every Mem0 search/add swaps `nomic-embed-text` (~0.3GB) and `qwen3:14b` in and out of VRAM (Section 2.3). `=2` would let the tiny embedder stay loaded next to one big model.
+- [ ] **Remote access (Section 3.5)** — VPN (e.g. Tailscale); not yet configured.
+- [ ] **Hermes-4-14B GGUF (9GB)** — still installed but unused (Section 2.2); decide after the Hermes reinstall whether to keep it or remove it with `ollama rm`.
+- [ ] **Section 9 cleanup** — once Hermes is reinstalled, decide whether to collapse or move the historical record in 9.1–9.8.
 
 ## Notes
 
@@ -684,4 +798,5 @@ rm -rf ~/Projects/AI/ai-agents/hermes-agent
 - Section 7 (CrewAI) runs in its own venv, separate from Mem0's (Section 5) — the two must never have the local Qdrant data open at the same time (see the note in 5.6).
 - Section 8 (Paperclip) is a nested git repo inside `~/Projects/AI` — see the `.gitignore` note in Section 6 before running any `git` commands at the repo root.
 - Section 9 (Hermes Agent) is also a nested git repo inside `~/Projects/AI` (same `.gitignore` note applies), but unlike Paperclip its config/secrets live entirely outside the repo at `~/.hermes`. **As of 2026-09-27, Section 9's install has been reverted — see 9.9.**
-- The `OLLAMA_MAX_LOADED_MODELS=1` systemd override (Section 9.7) is a global Ollama setting, not specific to Hermes — it affects every model call from every section of this guide, keeping only one model resident in VRAM at a time. Kept in place after the Hermes uninstall.
+- The `OLLAMA_MAX_LOADED_MODELS=1` systemd override (Section 2.3, first set up in 9.7) is a global Ollama setting, not specific to Hermes — it affects every model call from every section of this guide, keeping only one model resident in VRAM at a time. Kept in place after the Hermes uninstall.
+- Every Docker container in this guide uses the `unless-stopped` restart policy (standardized on 2026-09-27 — see 3.2).
