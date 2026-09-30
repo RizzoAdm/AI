@@ -1,0 +1,42 @@
+name: mem0-server
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: mem0-postgres
+    restart: unless-stopped
+    shm_size: "128mb"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+      - ../mem0-server-src/server/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    ports:
+      - "127.0.0.1:8432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d postgres -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mem0:
+    build:
+      context: .
+      additional_contexts:
+        upstream: ../mem0-server-src/server
+    image: mem0-server-local:v2.2.1
+    container_name: mem0-server
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "8432"
+      APP_DB_NAME: mem0_app
+      HISTORY_DB_PATH: /app/history/history.db
+    volumes:
+      - ./history:/app/history
+    depends_on:
+      postgres:
+        condition: service_healthy

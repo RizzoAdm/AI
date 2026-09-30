@@ -1,0 +1,9 @@
+[Unit]
+Description=Agenda o relatorio semanal do Mem0 (segunda 08:45)
+
+[Timer]
+OnCalendar=Mon *-*-* 08:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
