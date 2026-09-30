@@ -15,3 +15,9 @@ ai-agents/hermes-agent/
 
 # Secrets
 .env
+ai-agents/qdrant/storage/
+ai-agents/mem0-server-src/
+ai-agents/mem0-server/.env
+ai-agents/mem0-server/postgres-data/
+ai-agents/mem0-server/history/
+ai-agents/mem0-server/reports/

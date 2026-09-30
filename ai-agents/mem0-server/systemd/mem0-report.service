@@ -1,0 +1,7 @@
+[Unit]
+Description=Relatorio semanal da memoria compartilhada (Mem0 server)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Projects/AI/ai-agents/mem0-server
+ExecStart=/usr/bin/python3 %h/Projects/AI/ai-agents/mem0-server/mem0_report.py
