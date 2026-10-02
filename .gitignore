@@ -21,3 +21,4 @@ ai-agents/mem0-server/.env
 ai-agents/mem0-server/postgres-data/
 ai-agents/mem0-server/history/
 ai-agents/mem0-server/reports/
+ai-agents/crewai/outputs/

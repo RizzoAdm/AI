@@ -10,12 +10,12 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 - [2. Ollama Installation](#2-ollama-installation) — install, model storage path, model list, global setting `OLLAMA_MAX_LOADED_MODELS=2`, 64K context variants (Modelfiles)
 - [3. Open WebUI (Docker)](#3-open-webui-docker) — Docker install, container, restart policy, LAN/remote access, users
 - [4. Post-Install Checklist](#4-post-install-checklist) — verification for the base stack and the agents stack
-- [5. Mem0 — Agent Memory Layer](#5-mem0--agent-memory-layer-venv-graph-memory) — venv, Neo4j + APOC, embeddings model, `.env`, `config.py`, test
+- [5. Mem0 — Agent Memory Layer](#5-mem0--agent-memory-layer-venv-graph-memory) — **legacy/retired** library setup; Neo4j + APOC (stopped, kept for the Graphiti evaluation)
 - [6. Git — `~/Projects/AI` repo](#6-git--projectsai-repo) — `.gitignore`, nested repos
-- [7. CrewAI ↔ Mem0 Integration](#7-crewai--mem0-integration-venv-manual-tool) — Python 3.12 venv, dependencies and pins, integration script, troubleshooting
+- [7. CrewAI — Personal Crew](#7-crewai--personal-crew-venv-yaml-config-mem0-api-called-by-hermes) — Python 3.12 venv, memory/web tools, `run_crew.py`, YAML config + quick editing guide (7.5), Hermes ↔ Crew integration, troubleshooting
 - [8. Paperclip Agent Manager](#8-paperclip-agent-manager-docker) — clone, `.env` secret, Docker Compose, restart policy, first login, verify, updating
 - [9. Hermes Agent](#9-hermes-agent-orchestrator-for-the-crewai-team) — official installer, model choice (`gpt-oss:20b`), 64K variants, wizard choices, config fixes, validation tests, troubleshooting, first-install history (9.12)
-- [10. Shared Memory — Mem0 Server + Qdrant Server](#10-shared-memory--mem0-server-docker--qdrant-server) — Qdrant in Docker, patched Mem0 server (Ollama + Qdrant), Hermes memory provider, auto-sync block, `SOUL.md` memory rules, weekly validation report + timer
+- [10. Shared Memory — Mem0 Server + Qdrant Server](#10-shared-memory--mem0-server-docker--qdrant-server) — Qdrant in Docker, patched Mem0 server (Ollama + Qdrant), Hermes memory provider, auto-sync block, `SOUL.md` memory rules, weekly validation report + timer, per-client API keys (10.12)
 - [Pending / To Investigate](#pending--to-investigate) — open items
 - [Notes](#notes) — cross-cutting reminders
 
@@ -37,7 +37,7 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 
 ### 0.1 Clone this repo
 
-The scripts and config files referenced in this guide (e.g. `ai-agents/mem0/config.py`, `ai-agents/crewai/crewai_mem0_example.py`) live in this repo. On a fresh install, clone it first:
+The scripts and config files referenced in this guide (e.g. `ai-agents/crewai/run_crew.py`, `ai-agents/mem0-server/docker-compose.yml`) live in this repo. On a fresh install, clone it first:
 
 ```
 sudo apt install git
@@ -53,10 +53,11 @@ By design (see `.gitignore`, Section 6), the repo holds no data and no secrets. 
 
 - Open WebUI data — Docker volume `open-webui` (users, chats, settings)
 - Shared memories (current, Section 10) — `ai-agents/qdrant/storage/` (Qdrant server data) and `ai-agents/mem0-server/postgres-data/` + `ai-agents/mem0-server/history/` (Mem0 server auth DB and audit trail)
-- Legacy Mem0 data (Section 5, being retired) — `ai-agents/mem0/neo4j/data/` (empty) and `ai-agents/mem0/qdrant_data/` (test data only)
+- Neo4j data (Section 5, stopped, empty) — `ai-agents/mem0/neo4j/` (the legacy `qdrant_data/` was deleted on 2026-09-30)
+- Crew run outputs (Section 7) — `ai-agents/crewai/outputs/` (personal content, optional)
 - Paperclip data — `ai-agents/paperclip/data/`
 - Hermes Agent config/data — `~/.hermes/` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`, sessions, memories); outside the repo by design (Section 9.1). The memory-related pieces are also written out in Section 10.
-- Every `.env` file (Neo4j password, Paperclip's `BETTER_AUTH_SECRET`, Mem0 server's `POSTGRES_PASSWORD`/`JWT_SECRET`/`ADMIN_API_KEY`) — also keep these values in a password manager
+- Every `.env` file (Neo4j password, Paperclip's `BETTER_AUTH_SECRET`, Mem0 server's `POSTGRES_PASSWORD`/`JWT_SECRET`/`ADMIN_API_KEY`, the Crew's `MEM0_API_KEY` in `ai-agents/crewai/.env`) — also keep these values, and the Mem0 server admin login (Section 10.12), in a password manager
 - Optional: Ollama models (`/usr/share/ollama/.ollama/models`, ~110GB) — re-downloadable, just slow
 
 > The backup/restore procedure itself isn't written yet — see Pending.
@@ -142,7 +143,7 @@ Verify installed models:
 ollama list
 ```
 
-Expected: **10 models** (9 from the Ollama library + the Hermes GGUF), plus the **2 `-64k` variants** once Section 2.4 is done — 12 entries total.
+Expected: **10 models** (9 from the Ollama library + the Hermes GGUF), plus the **3 context variants** (`gpt-oss:20b-64k`, `gemma4:12b-64k`, `qwen3-14b-32k`) once Section 2.4 is done — 13 entries total.
 
 ### 2.3 Global Setting: `OLLAMA_MAX_LOADED_MODELS=2`
 
@@ -189,6 +190,7 @@ The Modelfiles are versioned in this repo at `~/Projects/AI/modelfiles/`. Recrea
 ```
 ollama create gpt-oss:20b-64k -f ~/Projects/AI/modelfiles/gpt-oss-20b-64k.Modelfile
 ollama create gemma4:12b-64k -f ~/Projects/AI/modelfiles/gemma4-12b-64k.Modelfile
+ollama create qwen3-14b-32k -f ~/Projects/AI/modelfiles/qwen3-14b-32k.Modelfile
 ```
 
 Each Modelfile is just two lines, e.g.:
@@ -206,6 +208,15 @@ ollama ps
 ```
 
 > Ollama **caps** `num_ctx` at the model's trained maximum — a variant can't push a model past its native context. E.g. `qwen3:14b` stays at 40,960 even with `num_ctx 65536` (verified with `ollama ps`). Check a model's native maximum with `ollama show <model>` (line `context length`).
+
+**`qwen3-14b-32k` — why 32K and not the 40,960 ceiling (measured 2026-09-30, used by the Crew's Critic, Section 7.4):** `qwen3` is a dense model with full attention in every layer, so its KV cache costs much more per token than `gpt-oss` (MoE) or `gemma4` (sliding window) — a smaller model can still need more VRAM at the same context.
+
+| Variant | `ollama ps` | Prompt eval | Generation |
+|---|---|---|---|
+| 40,960 (removed) | 16 GB, 12%/88% CPU/GPU | 146 t/s | 32 t/s |
+| **32,768** | 14 GB, **100% GPU** | 221 t/s | **68 t/s** |
+
+Spilling only 12% to the CPU halved the generation speed. Measure with `ollama run <model> --verbose "..." 2>&1 | grep "eval rate"` + `ollama ps`. Unload the orchestrator first (`ollama stop gpt-oss:20b-64k`) so the measurement isn't skewed.
 
 ---
 
@@ -314,7 +325,9 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 
 **Agents stack (Sections 5–10)** — check after finishing those sections:
 
-- [ ] `crewai_mem0_example.py` completes both rounds (Section 7.3, CrewAI `venv` active) — until the Crew tool is migrated to the Mem0 server API (Pending)
+- [ ] `python run_crew.py pessoal "..."` (Section 7.3, CrewAI `venv` active) prints a final answer and `OUTPUT_DIR=`, and that folder has `pedido.md` + 4 task files
+- [ ] In `hermes`, "Peça para a crew pessoal: ..." runs the Crew through the terminal tool and relays the answer + folder (Section 7.6)
+- [ ] `python3 mem0_admin.py list-keys` (inside `ai-agents/mem0-server`, no venv) shows the `crewai` and `hermes` keys (Section 10.12)
 - [ ] Paperclip loads at `http://localhost:3100`, and the checks in Section 8.6 print `ENV OK` and `SECRET MATCHES`
 - [ ] Hermes Agent: `hermes doctor` shows no `✗` lines, and the 4 tests in Section 9.10 pass (basic chat, `-c 65536` in the Ollama logs, tool calling, vision)
 - [ ] Qdrant answers at `curl -s http://localhost:6333/` (Section 10.2)
@@ -335,7 +348,7 @@ docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui dock
 > 1. **Mem0 2.0.0 (2026-04-14) removed external graph stores (Neo4j, Memgraph, Kuzu, Apache AGE) from the open-source SDK.** Graph memory became built-in *entity linking*: entities are extracted with spaCy and stored in a parallel `{collection}_entities` collection inside the vector store. The `graph_store` block below is **silently ignored** by every `mem0ai` 2.x — confirmed on 2026-09-28: the Neo4j database had 0 nodes and 0 relationships despite memories being written.
 > 2. Embedded Qdrant can only be opened by one process at a time, so it can't be shared between Hermes and the Crew.
 >
-> Kept below as a record of how the library setup worked. Its data (`qdrant_data/`, 3 test memories) and the `venv-mem0` venv are scheduled for removal once the Crew is migrated (see Pending). **Neo4j** (`neo4j-mem0`) is **stopped** with restart policy `no` — kept (empty) only while Graphiti, a temporal knowledge-graph memory that runs on Neo4j, is evaluated (see Pending).
+> Kept below as a record of how the library setup worked. **Retired on 2026-09-30:** `qdrant_data/`, `venv-mem0`, `config.py` and `test_mem0.py` were deleted after the Crew moved to the Mem0 server API; `ai-agents/mem0/` now holds only `neo4j/` and the `.env` with the Neo4j password. **Neo4j** (`neo4j-mem0`) is **stopped** with restart policy `no` — kept (empty) only while Graphiti, a temporal knowledge-graph memory that runs on Neo4j, is evaluated (see Pending).
 
 Gives agents (starting with CrewAI) persistent memory: a vector store (Qdrant, embedded/local) for semantic recall plus a graph store (Neo4j) for entity/relationship memory. Runs as a Python library inside a dedicated venv — not the official Docker server bundle, since that bundle only supports OpenAI/Anthropic/Gemini out of the box (solved later by patching it — Section 10). Fully local via Ollama.
 
@@ -521,6 +534,9 @@ ai-agents/mem0-server/postgres-data/
 ai-agents/mem0-server/history/
 ai-agents/mem0-server/reports/
 
+# CrewAI run outputs (Section 7) — personal content
+ai-agents/crewai/outputs/
+
 # Secrets
 .env
 ```
@@ -531,13 +547,23 @@ ai-agents/mem0-server/reports/
 
 ---
 
-## 7. CrewAI ↔ Mem0 Integration (venv, manual tool)
+## 7. CrewAI — Personal Crew (venv, YAML config, Mem0 API, called by Hermes)
 
-> **Migration pending (next stage):** the tool below still opens the **legacy embedded Qdrant** (Section 5) through the `mem0` library. It will be rewritten to call the **Mem0 server REST API** (Section 10) with `user_id: rizzo` and a Crew-specific `agent_id`, so the Crew and Hermes share one memory. After that, `mem0ai`/`spaCy`/`fastembed` can be removed from this venv (they live inside the Mem0 server image now).
+> **✅ Status (2026-10-01): first Crew running and called by Hermes.** The Crew uses the **Mem0 server REST API** (Section 10) for memory — the old `mem0` library tool, its embedded Qdrant and `crewai_mem0_example.py` were retired on 2026-09-30.
+> **Change of plan (2026-09-30):** the first Crew is a **personal assistant team** (tasks and day-to-day), not the "Get Contractors Now" Crew. GCN and the legal POC will get their own Crews later.
 
-Gives a CrewAI agent access to the Mem0 memory set up in Section 5, so it can recall facts/preferences across runs. **CrewAI has no built-in native support for a `"provider": "mem0"` memory backend** — confirmed by grepping the entire installed `crewai`/`crewai-core` source (version 1.15.22) for the string `"mem0"`: zero matches outside the `mem0` package itself. A `memory_config={"provider": "mem0", ...}` is silently ignored by this CrewAI version; it falls back to its own default (ChromaDB-based) memory, which then fails due to the `posthog`/`chromadb` version conflict noted in 7.4. Integration here is done manually instead, via a custom Tool.
+How it fits together:
 
-### 7.1 Create the venv (separate from Mem0's) with Python 3.12
+```
+You ──> Hermes (gpt-oss:20b-64k) ──terminal tool──> venv/bin/python run_crew.py pessoal "<request>"
+                                                        │  reads crews/pessoal/agents.yaml + tasks.yaml
+                                                        │  Process.sequential, one model per agent (Ollama)
+                                                        ├─ tools: buscar_memoria / salvar_memoria ─> Mem0 server API (agent_id crew-pessoal)
+                                                        ├─ tool:  buscar_web ─> DuckDuckGo (ddgs, no key)
+                                                        └─ writes outputs/pessoal/<date_time>_<topic>/*.md  →  prints final answer + OUTPUT_DIR=
+```
+
+### 7.1 Create the venv with Python 3.12
 
 Ubuntu 26.04 ships only Python 3.14 by default, which lacks pre-built wheels for several CrewAI dependencies (e.g. `tiktoken`, which requires a Rust compiler to build from source on 3.14). Python 3.12 is used instead, installed via the Deadsnakes PPA:
 
@@ -556,74 +582,173 @@ python3.12 -m venv venv
 source venv/bin/activate
 ```
 
+> Everything below that runs Python needs this venv active (`(venv)` at the start of the prompt). Leave it with `deactivate`. Hermes doesn't activate it — it calls `venv/bin/python` by absolute path, which uses the venv automatically.
+
 ### 7.2 Install dependencies
 
-Install in separate steps (installing everything in one `pip install` line can trigger a `resolution-too-deep` error — CrewAI's dependency tree, combined with `langchain-neo4j`, is too complex for pip to solve in one pass):
+Install in separate steps (one long `pip install` line can trigger `resolution-too-deep`):
 
 ```
 pip install --upgrade pip setuptools wheel
 pip install crewai
-pip install mem0ai==2.0.14
 pip install python-dotenv
-pip install neo4j
-pip install langchain-neo4j
-```
-> `mem0ai` is pinned to `2.0.14` here for stability, though this pin turned out not to be the fix for the integration issue (see 7.4) — the `mem0` library itself works fine with any recent 2.x version, as long as `search()`/`get_all()` calls use `filters={"user_id": ...}` (see Section 5.6's note).
-
-`mem0ai` also requires its own `.env` with `NEO4J_PASSWORD` — same value as Section 5.4, copy `~/Projects/AI/ai-agents/mem0/.env` or create a fresh one in the `crewai` folder. A `.env.example` (no real value) is committed in the `crewai` folder as a template.
-
-`crewai` installs `chromadb`, which pins `posthog<6.0.0`; `mem0ai` has no upper bound on `posthog` and pulls the latest (7.x) by default. Pin it down explicitly after installing both:
-
-```
 pip install "posthog<6.0.0"
+pip install ddgs
+pip check            # expected: No broken requirements found.
 ```
 
-This leaves a cosmetic `pip check` warning (`mem0ai requires posthog>=7.14.0, but you have posthog 5.4.0`) — see 7.4 for why this is safe to ignore.
+- `crewai` 1.15.22 at install (1.15.23 available — update deliberately, see Pending).
+- `posthog<6.0.0` is what `chromadb` (a `crewai` dependency) requires.
+- `ddgs` is the DuckDuckGo search library used by `web_tools.py` (9.16.0 at install).
+- **Not installed on purpose:** `crewai-tools` (pulls a large dependency tree into a venv that already had conflicts — a 30-line custom tool does the job) and `mem0ai`/spaCy/fastembed (memory now goes through the Mem0 server API; those libraries live inside the server image). Older installs had `neo4j`/`langchain-neo4j` too; they're harmless leftovers.
+- On an old venv being cleaned up: `pip uninstall -y mem0ai spacy fastembed en-core-web-sm` (nothing else depended on them — check with `pip show <pkg>`, line `Required-by`).
 
-#### 7.2.1 Optional extras: spaCy (entity extraction) + fastembed (BM25 keyword search)
-
-```
-pip install "mem0ai[nlp]==2.0.14"
-pip install fastembed
-```
-> Same `mem0ai` pin as in 7.2 — keeps pip from switching the version while adding the extra.
-
-Both models download automatically on first use — no manual `spacy download` step needed: the `en_core_web_sm` spaCy model downloads the first time a tool call triggers entity extraction, and the fastembed BM25 model downloads on the first search. Confirmed working end-to-end (Section 7.3's script).
-> Do **not** run `pip install "mem0ai[extras]"` for this — see the warning in Section 5.1. If it's already been run by mistake, recover with:
->
-> ```
-> pip uninstall -y langchain langchain-community elasticsearch elastic-transport opensearch-py opensearch-protobufs boto3 botocore s3transfer
-> pip install --upgrade "langchain-core>=1.4.7,<2" "langchain-text-splitters>=1.1.2,<2" "posthog<6.0.0"
-> ```
-
-### 7.3 The integration script
-
-`~/Projects/AI/ai-agents/crewai/crewai_mem0_example.py` — a minimal working example. Key points:
-
-- `memory=False` on the `Crew` — disables CrewAI's own (broken) default memory system.
-- A custom `BaseTool` (`buscar_memoria`) that the agent calls explicitly to search Mem0 (`mem0_client.search(query, filters={"user_id": USER_ID}, limit=5)`).
-- A `salvar_memoria()` helper function, called manually after each `crew.kickoff()`, that writes the turn to Mem0 (`mem0_client.add(..., user_id=USER_ID)`).
-- The agent's LLM must be set **explicitly** to Ollama — `memory_config`/Mem0 setup has no effect on which LLM the *agent* itself uses to reason. Without this, CrewAI defaults to OpenAI and fails with `OPENAI_API_KEY is required`:
+### 7.3 Files (in `ai-agents/crewai/`, tracked by git unless noted)
 
 ```
-from crewai import LLM
-ollama_llm = LLM(model="ollama/qwen3:14b", base_url="http://localhost:11434")
-# ...
-agent = Agent(..., llm=ollama_llm, tools=[BuscarMemoriaTool()])
+ai-agents/crewai/
+├── .env                 # MEM0_URL, MEM0_USER_ID, MEM0_API_KEY, MEM0_INFER (gitignored)
+├── .env.example         # template, no secrets
+├── mem0_tools.py        # buscar_memoria / salvar_memoria → Mem0 server REST API (stdlib HTTP)
+├── web_tools.py         # buscar_web → DuckDuckGo via ddgs
+├── run_crew.py          # generic runner: builds any Crew from crews/<name>/*.yaml
+├── crews/
+│   └── pessoal/
+│       ├── agents.yaml  # agents: model, temperature, tools, role/goal/backstory
+│       └── tasks.yaml   # tasks in run order + which earlier tasks each one sees
+├── outputs/             # one folder per run (gitignored — personal content)
+└── venv/                # gitignored
 ```
 
-The full script is committed in this repo at `ai-agents/crewai/crewai_mem0_example.py`.
+**`.env`** — the API key is created with `mem0_admin.py` (Section 10.12), which writes it straight into the file; never type it by hand:
 
-### 7.4 Troubleshooting notes (from setting this up)
+```
+MEM0_URL=http://127.0.0.1:8888
+MEM0_USER_ID=rizzo
+MEM0_API_KEY=<written by: python3 ../mem0-server/mem0_admin.py create-key crewai ~/Projects/AI/ai-agents/crewai/.env>
+# MEM0_INFER=false  -> grava o texto literal, sem LLM e sem entity linking
+MEM0_INFER=true
+```
 
-- **`resolution-too-deep` on `pip install`**: install packages one at a time (Section 7.2), not all in one command.
-- **`tiktoken` build fails needing a Rust compiler**: symptom of running on Python 3.14; switch to 3.12 (Section 7.1) rather than installing Rust.
-- **Duplicated `(venv)` in the shell prompt** (e.g. `((venv) )`, `(venv) (venv)`): a known quirk when a venv is activated on top of another already-active one, or after a broken attempt to customize `PS1`. It's purely cosmetic (confirmed via `$VIRTUAL_ENV` and `which python3` — the correct interpreter is always used), but if it's distracting, the reliable fix is closing the terminal application entirely and opening a new one, then activating the venv once.
-- **`OPENAI_API_KEY is required`**: the agent's `llm=` wasn't set explicitly — see Section 7.3.
-- **`chromadb` requires `posthog<6.0.0`, but `mem0ai` requires `posthog>=7.14.0`**: a real conflict between CrewAI's `chromadb` dependency and `mem0ai`'s declared metadata — the two ranges don't overlap, so no single `posthog` version satisfies both `pip check`. Resolved by pinning `posthog<6.0.0` (Section 7.2), which leaves a residual `pip check` warning from `mem0ai`'s side. This is safe in practice: both packages only use `posthog` for anonymous telemetry (simple `capture()` calls), an API that's been stable across major versions, and this was confirmed by running the integration script (Section 7.3) end-to-end with `posthog` 5.4.0 — `add()` and `search()` both worked with no exceptions. The theoretical risk is a future `mem0ai` release calling a `posthog` 7.x-only feature outside the paths already tested here; if that ever surfaces, the more robust fix is disabling Mem0's telemetry entirely (`MEM0_TELEMETRY=false` in `.env`), which removes the dependency on `posthog`'s version for `mem0ai`'s side — not applied yet, listed under Pending.
-- **`mem0ai[extras]` breaks `langchain-core`/`langgraph`**: see the warning in Section 5.1 and the recovery command in 7.2.1. Installing `mem0ai[extras]` for BM25 support is the wrong flag — it's meant for AWS/OpenSearch/Elasticsearch integrations — and pulls an old `langchain`/`langchain-community` that downgrades `langchain-core`, breaking anything in the venv that needs `langchain-core>=1.x` (`langgraph`, `langchain-neo4j`, `langchain-classic`, `langgraph-sdk`, `langgraph-prebuilt`).
-- **`memory_save_failed` warning with "empty scope stack"**: misleading — this came from CrewAI's default (ChromaDB) memory failing silently in the background (see `posthog` conflict above), not from Mem0. It disappeared once `memory=False` + the manual tool approach (Section 7.3) replaced the native `memory_config`.
-- **Qdrant appears to not be running (`docker ps` doesn't show it, nothing on port 6333)**: expected — it's running in local/embedded mode (Section 5.6), not as a server.
+**`mem0_tools.py`** — `memory_tools(agent_id, crew_role)` returns the two tools. `buscar_memoria` → `POST /search` with `filters: {user_id}` and `top_k: 5`, so it sees memories from **every** agent (Hermes included), each shown with its `[agent_id]`. `salvar_memoria` → `POST /memories` with `user_id`, the Crew's `agent_id`, `metadata: {source: crewai, crew_role}` and `infer` from `MEM0_INFER`. Uses only the standard library for HTTP (no extra package). Timeout 180 s, because `infer=true` calls the extraction LLM.
+
+**`MEM0_INFER` — measured 2026-09-30:**
+
+| | `infer=false` | `infer=true` (**default**) |
+|---|---|---|
+| Entity linking (`mem0_memories_entities`) | **none** (2 → 2) | yes (2 → 8) |
+| Time per save | instant | ~9 s (`gpt-oss` extraction) |
+| Text stored | exactly what the agent wrote | rewritten in English; can add small details that weren't said |
+| VRAM | no effect | if the agent uses another model, forces a swap to `gpt-oss` and back |
+
+`true` was chosen for the entity linking and a format consistent with Hermes's memories; the weekly report (10.9) catches bad rewrites. Do **not** add the Crew's `agent_id` to `MEM0_SKIP_INFER_AGENTS` (10.8), or `infer=true` saves would be silently dropped. Deleting a memory also deletes its entities (verified).
+
+**`run_crew.py`** — usage, CrewAI venv active (or via `venv/bin/python`):
+
+```
+cd ~/Projects/AI/ai-agents/crewai
+source venv/bin/activate
+python run_crew.py pessoal "seu pedido aqui"              # only the final answer + OUTPUT_DIR=
+python run_crew.py pessoal "seu pedido aqui" --verbose    # also shows every agent's reasoning and tool calls
+```
+
+What it does: disables CrewAI telemetry (`CREWAI_DISABLE_TELEMETRY`, `OTEL_SDK_DISABLED`); reads the two YAML files; builds each agent with `LLM(model="ollama/<model>", base_url="http://localhost:11434", temperature=...)`; maps tool names from the YAML to tool objects (an unknown name stops with an error listing the valid ones); uses `agent_id = crew-<crew name>` for memory; prepends **`Today's date: YYYY-MM-DD.`** to every task (models don't know the date — see 7.6); runs with `Process.sequential` and `memory=False`; saves `pedido.md` plus one `<n>_<task>.md` per task in `outputs/<crew>/<YYYY-MM-DD_HHMM>_<topic>/`; prints the final answer and, as the last line, `OUTPUT_DIR=<folder>`.
+
+### 7.4 The personal Crew
+
+| Agent | Model | Temp. | Tools | Job |
+|---|---|---|---|---|
+| `pesquisador` (Researcher) | `gpt-oss:20b-64k` | 0.2 | memory (search/save), web | Memory first, then a few web searches; brief ≤ 600 words with links + "Uncertainties" |
+| `redator` (Writer) | `gpt-oss:20b-64k` | 0.5 | memory (search/save) | Draft, then the final version applying the Critic's valid fixes |
+| `critico` (Critic) | `qwen3-14b-32k` | 0.2 | memory (search/save) | Only real problems (≤ 8, zero is fine), each with a concrete fix + verdict |
+
+Tasks (`Process.sequential`), with explicit `context` so each step only sees what it needs — this keeps every prompt small (~300–700 words per step measured, far below the 32K/64K windows):
+
+| # | Task | Agent | Receives (`context`) |
+|---|---|---|---|
+| 1 | `pesquisa` | pesquisador | only the request |
+| 2 | `rascunho` | redator | request + research |
+| 3 | `critica` | critico | request + draft (not the raw research) |
+| 4 | `final` | redator | request + draft + critique; must end with a **"Rejected suggestions"** section (or "none") |
+
+Why the Critic uses a **different model**: confronting opinions from different model families is a design goal. `qwen3` is from another family than `gpt-oss` and handles tool calls well (`gemma4` failed at that — 9.2). It swaps with `gpt-oss` in VRAM during the run (~20–40 s extra). Answers come in the **request's language** (PT or EN); memories are stored in English.
+
+Measured runs: 1m29s (first, `--verbose`), 1m03s, 1m47s (called by Hermes).
+
+### 7.5 Quick guide — editing the YAML files
+
+Both files are in `ai-agents/crewai/crews/pessoal/`. Edit with any text editor (e.g. `nano crews/pessoal/agents.yaml`; save with Ctrl+O, Enter; exit with Ctrl+X). **No Python changes are needed** for any of the edits below.
+
+**Rules:** indent with **2 spaces, never TAB**; keep the `key: value` shape; text spanning several lines goes after `|`, indented. Instructions to the models are in English (they follow it better); the answer language comes from the request.
+
+**Change an agent's model** (`agents.yaml`):
+
+```yaml
+critico:
+  model: qwen3-14b-32k     # any name from `ollama list`
+```
+
+Prefer a variant with the context baked in (`-64k`, `-32k` — Section 2.4); a plain model loads with only 4096 tokens through Ollama. Check that it fits: run it once, then `ollama ps` → `PROCESSOR` should read `100% GPU`.
+
+**Make an agent more creative or more down-to-earth** — `temperature` is **per agent**, even when two agents share the same model (each agent gets its own LLM object):
+
+```yaml
+redator:
+  temperature: 0.5   # 0.0 = precise/repeatable ... 1.0 = creative/varied
+```
+
+**Give or remove tools:** `tools: [buscar_memoria, salvar_memoria, buscar_web]` — only these three names exist today.
+
+**Limit loops:** `max_iter: 5` — maximum reasoning/tool rounds per task.
+
+**Change what a task does** (`tasks.yaml`): edit `description` (what to do; `{pedido}` is replaced by the request) and `expected_output` (format and size of the result). Size limits here are what keep the context small.
+
+**Control what a task sees:** `context: [rascunho, critica]` — names of **earlier** tasks only (the runner stops with an error if one is out of order). Tasks run in the order they appear in the file.
+
+**Add an agent:** copy a block in `agents.yaml`, rename it, adjust; then point a task in `tasks.yaml` to it with `agent: <name>`.
+
+**Check after editing** (CrewAI venv active):
+
+```
+cd ~/Projects/AI/ai-agents/crewai
+source venv/bin/activate
+python -c "import yaml; a=yaml.safe_load(open('crews/pessoal/agents.yaml')); t=yaml.safe_load(open('crews/pessoal/tasks.yaml')); print({k: v['model'] for k, v in a.items()}); print(list(t))"
+```
+
+**New Crew** (e.g. GCN): copy the folder (`cp -r crews/pessoal crews/gcn`), edit both files, run `python run_crew.py gcn "..."`. Its memory `agent_id` becomes `crew-gcn` automatically.
+
+### 7.6 Hermes ↔ Crew integration
+
+Hermes calls the Crew through its **terminal tool**, using the venv's Python by absolute path (no activation needed, works from any folder). Section appended to `~/.hermes/SOUL.md` (backup: `SOUL.md.bak-pre-crew`; outside the repo, so the full text is kept here):
+
+```
+## Personal crew (CrewAI)
+- The user has a CrewAI team called "personal crew" (Researcher, Writer, Critic). It researches the web and memory, writes a draft, has it reviewed by a different model, and returns a revised final answer.
+- Use it ONLY when the user asks for the crew/team, or explicitly asks for researched and reviewed work (comparisons, summaries, guides, plans, emails based on research). For quick questions, answer yourself.
+- Run it with the terminal tool, using exactly this command (one line):
+  /home/guilherme/Projects/AI/ai-agents/crewai/venv/bin/python /home/guilherme/Projects/AI/ai-agents/crewai/run_crew.py pessoal "<the user's request, in the user's own language>"
+- Put the request inside double quotes and escape any double quotes inside it. Add --verbose at the end only if the user asks to see the agents working.
+- It takes 1 to 3 minutes. If the terminal tool accepts a timeout, use at least 400 seconds. Wait for it to finish and never start it twice for the same request.
+- The last line of the output is OUTPUT_DIR=<folder>. Reply with the final answer printed before that line, without rewriting or shortening it, then tell the user the folder path.
+- If the command fails, show the error message. Never invent or summarize a result the crew did not produce.
+```
+
+Test (in `hermes`): `Peça para a crew pessoal: compare 3 apps gratuitos de lista de tarefas para usar no celular e no computador, e recomende um.` → one `terminal` call with the command above, ~1–2 min, final answer + folder path.
+
+Timeouts: Hermes's `terminal.timeout` is **180 s** (`~/.hermes/config.yaml`) and the per-tool-call deadline is 420 s — enough for current runs (~1–2 min). If the Crew grows past 3 min, raise `terminal.timeout`.
+
+### 7.7 Troubleshooting notes
+
+- **Task files written to `crewai/home/guilherme/...` instead of `outputs/`:** CrewAI's `output_file` strips the leading `/` from absolute paths and writes relative to the current folder. Fixed by not using `output_file` — `run_crew.py` writes each task from `result.tasks_output` itself.
+- **Critic says sources from 2024–2026 are "from the future", or that links are broken:** models don't know today's date (their training cutoff) and can't open links. Fixed with the date line prepended to every task and a Critic rule: never claim a link is broken or a date is wrong without evidence in the draft — mark it "unverified".
+- **Critic fills the list up to the maximum / Writer accepts everything:** the Critic now lists only real problems ("fewer is better; zero is fine", no duplicates) and the Writer must list rejected suggestions. Quality tuning continues (Pending).
+- **`exit 130` on the Hermes terminal call:** the command was interrupted (SIGINT) — e.g. a key pressed in the Hermes window while it waited. Just ask again.
+- **Nothing printed while it runs:** expected without `--verbose`.
+- **`resolution-too-deep` on `pip install`:** install packages one at a time (7.2).
+- **`tiktoken` build fails needing a Rust compiler:** running on Python 3.14; use the 3.12 venv (7.1).
+- **Duplicated `(venv)` in the prompt** (e.g. `(venv) (venv)`): cosmetic, from activating a venv on top of another; close the terminal and open a new one.
+- **`OPENAI_API_KEY is required`:** an agent without an explicit `llm=` — `run_crew.py` always sets the Ollama LLM.
+- **History (retired setup, 2026-09-23 → 2026-09-30):** the first integration used the `mem0` library with an embedded Qdrant (`crewai_mem0_example.py`), `mem0ai==2.0.14`, spaCy and fastembed in this venv. Lessons kept: CrewAI 1.15.22 has **no** native `"provider": "mem0"` memory (a `memory_config` is silently ignored and falls back to its broken ChromaDB memory, which caused the misleading `memory_save_failed` warning); `mem0ai[extras]` is a cloud-integrations bundle that broke `langchain-core` — for BM25 the right package is plain `fastembed`.
 
 ---
 
@@ -717,7 +842,7 @@ docker update --restart unless-stopped docker-paperclip-1
 
 ![Hermes](HermesChat.png)
 
-Autonomous agent framework from Nous Research ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)), used to orchestrate/delegate work to the CrewAI team (Section 7), particularly for the future "Get Contractors Now" project. Fully local via Ollama, same as everything else in this stack.
+Autonomous agent framework from Nous Research ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)), used to orchestrate/delegate work to the CrewAI team (Section 7) — first the personal Crew, later per-project Crews (e.g. "Get Contractors Now"). Fully local via Ollama, same as everything else in this stack.
 
 > **✅ Status (2026-09-27): reinstalled from scratch and validated** — tool calling and vision both working. A first install earlier the same day was fully reverted after validation problems; that history is condensed in Section 9.12.
 
@@ -846,7 +971,7 @@ Hermes (`gpt-oss`, 12 GB) and its vision model (`gemma4`, 8.5 GB) don't fit in 1
 
 > Ollama also unloads any model idle for 5 minutes (default `keep_alive`), so the first Hermes turn or Mem0 extraction after a pause pays a reload (~20 s measured).
 
-> CrewAI corollary, once a Crew script exists: use `Process.sequential` so agents never call their models at the same time.
+> CrewAI corollary: the Crew uses `Process.sequential` (Section 7.4), so agents never call their models at the same time. When the Critic (`qwen3-14b-32k`, 14 GB) runs, Ollama swaps it with `gpt-oss` the same way (~20–40 s per run).
 
 ### 9.10 Validation tests (2026-09-27)
 
@@ -893,13 +1018,13 @@ rm -rf ~/Projects/AI/ai-agents/hermes-agent
 
 ## 10. Shared Memory — Mem0 Server (Docker) + Qdrant Server
 
-> **✅ Status (2026-09-29): running and validated with Hermes.** CrewAI migration to the API is the next stage (Section 7 note).
+> **✅ Status (2026-10-01): running, shared by Hermes and the CrewAI Crew** (validated in both directions), each client with its own API key (10.12).
 
 One memory shared by Hermes and the CrewAI team: whatever one agent stores, the others can find. Everything runs locally; nothing reaches a cloud API.
 
 ```
 Hermes (plugin mem0, self-hosted mode) ─┐
-CrewAI tool (REST, pending)  ───────────┼─ HTTP + X-API-Key ─> Mem0 server  127.0.0.1:8888  (Docker, network host)
+CrewAI tools (mem0_tools.py) ───────────┼─ HTTP + X-API-Key ─> Mem0 server  127.0.0.1:8888  (Docker, network host)
                                          │                        ├─ LLM (fact extraction): gpt-oss:20b-64k  ─┐
                                          │                        ├─ Embedder: nomic-embed-text (768 dims)  ──┴─ Ollama 127.0.0.1:11434
                                          │                        ├─ Vectors + entities: Qdrant 127.0.0.1:6333 (Docker)
@@ -911,7 +1036,7 @@ Key facts that shaped the design:
 - **No Neo4j.** Mem0 2.x dropped external graph stores; "graph memory" is now entity linking inside the vector store (`mem0_memories_entities` collection). See the note at the top of Section 5.
 - **Extraction is ADD-only** in Mem0 2.x: memories accumulate, nothing is updated or deleted automatically. That makes redundancy the main risk — handled by the auto-sync block (10.8) and the weekly report (10.9).
 - **Memories are written in English** by the extraction LLM, even from Portuguese input, and **cross-language search works**: the same question in PT and EN scored 0.376 vs 0.377 against the same memory. So the hard-coded English spaCy model (`en_core_web_sm`) is not a problem.
-- **Isolation by IDs:** every client uses `user_id: rizzo` (that's what makes the memory shared) and its own `agent_id` (`hermes`, later one for the Crew) so it's always known who wrote what. Qdrant indexes `user_id`, `agent_id`, `run_id`, `actor_id`, so filtering is cheap.
+- **Isolation by IDs:** every client uses `user_id: rizzo` (that's what makes the memory shared) and its own `agent_id` (`hermes`; one per Crew: `crew-pessoal`, later `crew-gcn`, …) so it's always known who wrote what. Qdrant indexes `user_id`, `agent_id`, `run_id`, `actor_id`, so filtering is cheap.
 - **Everything binds to `127.0.0.1`** — not reachable from the LAN.
 
 ### 10.1 Folder layout
@@ -1084,6 +1209,8 @@ To rotate the key: generate a new one, replace `ADMIN_API_KEY` in `ai-agents/mem
 
 Validated: Hermes found, via `mem0_search`, a memory written by a different `agent_id` — the shared-memory goal.
 
+> **Since 2026-09-30 Hermes uses its own API key** (label `hermes`), not the `ADMIN_API_KEY` shown above — created with `python3 mem0_admin.py create-key hermes ~/.hermes/.env`, which replaces only the `MEM0_API_KEY` line (backup: `~/.hermes/.env.bak-pre-hermes-key`). See 10.12.
+
 ### 10.8 Auto-sync block + memory rules for Hermes
 
 **Problem found:** after every reply, the plugin's `sync_turn` sends the user message + answer to the server with `infer=true` (LLM fact extraction), in the background. With ADD-only Mem0 this created a redundant memory on the very first test (the question itself became a fact), and it costs one extra `gpt-oss` call per turn, competing for the GPU. Editing the plugin was rejected (overwritten by `hermes update`).
@@ -1103,13 +1230,23 @@ Validated: Hermes found, via `mem0_search`, a memory written by a different `age
 - Write each memory as one short, self-contained sentence in English, starting with the project name when relevant (e.g. "Get Contractors Now: second niche will be plumbing in Cochrane.").
 - Do NOT save small talk, questions, your own answers or explanations, temporary task state, or facts already in memory (use mem0_search first if unsure).
 - A statement of a decision or fact is information, not a work request: after saving it, reply with a short acknowledgment. Do not search files, run commands or start tasks unless the user asks for them.
-- Whenever you call mem0_add, end your reply with one line in this exact format: "Saved to memory: <the sentence you saved>".
+- Saving happens ONLY when you actually call the mem0_add tool and it returns success. Writing about saving does NOT save anything, and the system never adds a "Saved to memory" line for you.
+- Only after mem0_add has returned success in this same turn, end your reply with one line in this exact format: "Saved to memory: <the sentence you saved>".
+- If you did not call mem0_add in this turn, or it failed, NEVER write "Saved to memory". Write instead: "Memory NOT saved: <reason>".
 - Before answering questions about the user's projects, preferences or past decisions, search memory first.
 ```
 
 Append it with `cat >> ~/.hermes/SOUL.md << 'EOF' ... EOF` and check with `grep -c 'Long-term memory (Mem0)' ~/.hermes/SOUL.md` (must print `1`).
 
-**Canary test** — in `hermes`, state a real decision **without** asking to save it. Pass = one `mem0_add`, no file searches, and the reply ends with `Saved to memory: ...`. History: the first version of the rules saved correctly but didn't announce it and treated the statement as a work request (searched files, then asked what to do); the version above passed. Proactive saving depends on the model's judgement — "anota isso" is the guaranteed path.
+**Canary test** — in `hermes`, state a real decision **without** asking to save it. Pass = one `mem0_add`, no file searches, and the reply ends with `Saved to memory: ...`. History: the first version of the rules saved correctly but didn't announce it and treated the statement as a work request (searched files, then asked what to do); the second version passed.
+
+**Hallucinated save (2026-09-30)** — before the Hermes update, a canary reply ended with `Saved to memory: ...` but **no `mem0_add` was called** (no `⚡ mem0_add` line in the chat; the server log only had the auto-sync `skip_infer`); the model's reasoning showed it believed the line was "appended by the system". The update alone proved nothing — the model samples, so one canary is one sample. Fix: the three rules above (they replaced the old single "Whenever you call mem0_add…" line; backup `SOUL.md.bak-pre-anti-hallucination`). Measured with **5 canaries in fresh sessions: 5/5 real saves**, confirmed on the server. Always confirm a canary on the server, not only in the chat:
+
+```
+docker logs mem0-server --since 5m 2>&1 | grep -iE "POST /memories|skip_infer"
+```
+
+A real save is a `POST /memories` **without** a `skip_infer` line right before it. Proactive saving still depends on the model's judgement — "anota isso" is the guaranteed path; continuous detection is in Pending.
 
 ### 10.9 Validation — weekly report + timer
 
@@ -1153,6 +1290,13 @@ Monthly, across reports: many false negatives → Hermes saves too little; recon
 ### 10.10 Updating
 
 - **Hermes:** `hermes update` is safe for this setup — everything we changed lives in `~/.hermes` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`), which updates preserve; no Hermes code was modified. After every update: `hermes doctor`, `hermes memory status`, and the canary test (10.8), since the plugin's behavior could change.
+  Done on 2026-09-30 (build 3714 → 5130, 1,416 commits, config v46 → v49; `compression.threshold_tokens` removed — it held the old default). Backup first, outside the repo (contains secrets; ~850 MB because of sessions/runtime):
+  ```
+  mkdir -p ~/backups
+  tar -czf ~/backups/hermes-pre-update-$(date +%F).tar.gz -C ~ .hermes
+  chmod 600 ~/backups/hermes-pre-update-*.tar.gz
+  ```
+  Warnings `socket ignored` / `file changed as we read it` are expected while the gateway runs. The update also installs `cua-driver` (computer use stays off — see Pending) and restarts the gateway; "N commits behind" right afterwards is normal on the `main` channel.
 - **Mem0 server:** never updates by itself. To upgrade: clone the new tag into `mem0-server-src` (delete the old clone first), change `mem0ai==<version>` and the image tag, test `patch_main.py` against the new `main.py` (10.4), then build and recreate. If the build stops at `patch_main: esperado 1 ocorrencia, achei 0`, upstream changed the text — adapt the patch before going on.
 - **Qdrant / Postgres:** a running container never updates itself; only after pulling a new image and recreating. Postgres is pinned to major 17.
 
@@ -1164,56 +1308,103 @@ Monthly, across reports: many false negatives → Hermes saves too little; recon
 - **Embedded Qdrant "already in use"/lock errors:** only affect the legacy Section 5 setup (one process at a time); the Qdrant server has no such limit.
 - **Neo4j empty despite "graph memory":** expected on Mem0 2.x (Section 5 note).
 
+### 10.12 API keys per client + `mem0_admin.py`
+
+Each client has its **own key** (revocable on its own, and the server's request log shows which key made each call): `crewai` (in `ai-agents/crewai/.env`, shared by every Crew) and `hermes` (in `~/.hermes/.env`). `ADMIN_API_KEY` stays only for emergencies and for `mem0_report.py`. Keys **don't isolate memories** — the `user_id`/`agent_id` sent by the client does, and that's intended (everyone must see everyone).
+
+How the server works (read from `server/routers/auth.py` and `api_keys.py`): `POST /auth/register` creates the **first and only** admin and closes afterwards (`GET /auth/setup-status` → `needsSetup`); keys are created with `POST /api-keys` by a **logged-in user** (JWT from `POST /auth/login`), stored hashed, linked to that user. A key created with `ADMIN_API_KEY` would be orphaned (that auth maps to a fake user id 0), hence the real user. The register endpoint sends the admin e-mail to telemetry — `MEM0_TELEMETRY=false` (10.4) was already set before registering.
+
+**`mem0_admin.py`** (in `ai-agents/mem0-server/`, tracked; standard library only — no venv). Password asked with `getpass` (never on screen or in shell history); tokens never printed; a new key is written **straight into the given `.env`** (only that variable's line is replaced; file mode 600) and only its prefix is shown:
+
+```
+cd ~/Projects/AI/ai-agents/mem0-server
+python3 mem0_admin.py register                                             # once, on a fresh server
+python3 mem0_admin.py create-key crewai ~/Projects/AI/ai-agents/crewai/.env
+python3 mem0_admin.py create-key hermes ~/.hermes/.env
+python3 mem0_admin.py list-keys                                            # id, label, prefix, last use
+python3 mem0_admin.py revoke <key id from list-keys>
+```
+
+Admin user: name `rizzo`; e-mail and password in the password manager. On a reinstall with the old `postgres-data/` restored, the user and keys come back; on a fresh database, run `register` and create the keys again.
+
+Test a key without printing it (no venv):
+
+```
+python3 - <<'EOF'
+import json, urllib.request
+from pathlib import Path
+env = Path("~/Projects/AI/ai-agents/crewai/.env").expanduser().read_text().splitlines()
+key = next(l.split("=", 1)[1] for l in env if l.startswith("MEM0_API_KEY="))
+req = urllib.request.Request("http://127.0.0.1:8888/api-keys", headers={"X-API-Key": key})
+print("Chaves ativas:", [k["label"] for k in json.load(urllib.request.urlopen(req))])
+EOF
+```
+
+Expected: `Chaves ativas: ['crewai', 'hermes']`. (The first Crew key, `crew-gcn`, was revoked on 2026-09-30.)
+
+> Scripts fed through `python3 - <<'EOF'` **can't ask for keyboard input** (`input()` hits `EOFError`) — the heredoc occupies stdin. Interactive scripts must be saved to a file first.
+
 ---
 
 ## Pending / To Investigate
 
-**Next stage — shared memory and the Crew**
+**Next stages (order agreed 2026-09-30)**
 
-- [ ] **Migrate the CrewAI Mem0 tool to the Mem0 server REST API** (Section 7 note) — `user_id: rizzo`, a Crew-specific `agent_id`, key from the Mem0 server `.env`.
-- [ ] **Hermes Agent ↔ CrewAI integration** — Hermes orchestrating/delegating to the Crew; first Crew is for the "Get Contractors Now" project (decided 2026-09-28). Idea: a `run_crew.py` in the CrewAI venv that Hermes calls through its terminal tool; evolve to MCP later.
-- [ ] **`Process.sequential` in CrewAI** — apply when that Crew script is written (Section 9.9).
-- [ ] **Retire the legacy Mem0 library setup** once the Crew uses the API — delete `ai-agents/mem0/qdrant_data/` (3 test memories, checked 2026-09-28), the `venv-mem0` venv, `mem0/config.py`/`test_mem0.py`, and `mem0ai`/spaCy/fastembed from the CrewAI venv. Supersedes the old items "align `mem0ai` versions" and "hardcoded paths in `mem0/config.py`".
-- [ ] **Update Hermes Agent** ("update available" shown at startup) — `hermes doctor` + `hermes memory status` + canary before and after (Section 10.10).
-- [ ] **First weekly memory review — Monday 2026-10-05** (Section 10.9 routine), then monthly assessment.
-- [ ] **Extraction `max_tokens`** — after the server has been running for a while, check `docker logs mem0-server` for cut-off JSON errors; if they appear, raise `MEM0_LLM_MAX_TOKENS` to 8192 (env change + recreate).
-- [ ] **Graphiti (Zep)** — temporal knowledge-graph memory that runs on Neo4j (possibly with an MCP server): study whether it can bring back a queryable graph. `neo4j-mem0` stays stopped until then; afterwards decide to keep it (recreate with Section 5.2's command) or remove it.
-- [ ] **MCP in the AI project** — check whether Hermes and CrewAI work as MCP clients; if so, test a Mem0 MCP server in HTTP mode (always-on service, many agents), not stdio.
+- [ ] **Stage 12 — Telegram bot for Hermes** (`hermes setup gateway`; `python-telegram-bot` not installed yet). When the Crew is called from Telegram it must run with **`--verbose`**; decide how to deliver a log that exceeds Telegram's 4,096-character message limit (file attachment or split messages).
+- [ ] **Stage 13 — Paperclip** integrated with Hermes and the Crew.
+- [ ] **Stage 14 — Jarvis** ([eadmin2/jarvis_ai](https://github.com/eadmin2/jarvis_ai)) — analyze the repo, then install/run.
+
+**Personal Crew (Section 7)**
+
+- [ ] **Quality tuning of the prompts** — measured problems: the Critic (`qwen3`) answered in **English** to a Portuguese request; its critique is generic and **missed a contradiction** (To Do "5 collaborators per list" vs. "no strict limits" in the recommendation); the Writer still rejects nothing (`Rejected suggestions: none`); Hermes **dropped the "Rejected suggestions" section** when relaying, despite the "don't shorten" rule; some free-plan numbers looked doubtful (verify facts on official sites).
+- [ ] **Temperature per agent** (question for the tuning session) — yes, each agent has its own `temperature` in `agents.yaml`, even with the same model (7.5); decide the values (e.g. a more creative and a more grounded agent) and test.
+- [ ] **Next agents:** Agenda & organization and Finance & shopping (next — most useful), then Technical assistant (needs care: command access). Also to explore: Tutor, Home & maintenance, Travel & leisure, Health & routine (organization only).
+- [ ] **Update CrewAI** 1.15.22 → 1.15.23 (deliberately, with `pip check` + a test run).
+- [ ] **Old leftovers in the CrewAI venv** (`qdrant-client`, `thinc`, `neo4j`, `langchain-neo4j`, …) — optional cleanup, only with care (`pip show` → `Required-by`).
+- [ ] **Lock files per venv** — `pip freeze > requirements.lock.txt` in each venv, committed (`crewai` is unpinned).
+
+**Memory (Section 10)**
+
+- [ ] **First weekly memory review — Monday 2026-10-05** (10.9 routine), then monthly assessment.
+- [ ] **Detect "Saved to memory" without `mem0_add`** — extend `mem0_report.py` to scan `~/.hermes/state.db` for replies that announce a save with no `mem0_add` call in the same turn (a single canary is one sample; this measures it continuously).
+- [ ] **Extraction `max_tokens`** — check `docker logs mem0-server` for cut-off JSON; if found, raise `MEM0_LLM_MAX_TOKENS` to 8192 (env change + recreate).
+- [ ] **Graphiti (Zep)** — temporal knowledge-graph memory on Neo4j (possibly with an MCP server). `neo4j-mem0` stays stopped until then; afterwards keep it (move `ai-agents/mem0/neo4j/` + its `.env` to a folder of its own and recreate with 5.2's command) or remove it.
+- [ ] **MCP in the AI project** — check whether Hermes and CrewAI work as MCP clients; if so, test a Mem0 MCP server in HTTP mode (always-on service), not stdio.
 
 **Hermes Agent**
 
+- [ ] **Reasoning leaking into answers** — `gpt-oss` sometimes prints its reasoning ("We already have memory… We'll give concise.") at the start of the reply. Investigate together with `/reasoning high`.
 - [ ] **Test `/reasoning high`** with `gpt-oss:20b` — confirm it reaches the model through Ollama `/v1`.
-- [ ] **Test other orchestrator models** (starting with the installed ones; DeepSeek was mentioned, but `deepseek-r1:14b` is weak at tool calling), then look for models known to work well with Hermes.
-- [ ] **Hermes-4-14B at 64K via YaRN** (llama.cpp directly, `q8_0` KV cache) vs. `gpt-oss:20b-64k`; follow issue #53347 / PR #32770 (`allow_short_context`) and the model's `config.json` (`max_position_embeddings`, `rope_scaling`). The GGUF stays installed for this.
-- [ ] **Multiple Hermes profiles** — different agents/models per profile, each with its own Telegram bot (one gateway per profile), confronting decisions between agents; CLI state shared (default). After the current stages.
-- [ ] **Hermes remote control via chat platform** — Telegram chosen; `hermes setup gateway`.
-- [ ] **SearXNG instead of DuckDuckGo** for Hermes search (another Docker container).
-- [ ] **Vision capability auto-detection** in the wizard (Section 9.6) — only worth reporting upstream if it persists after `hermes update`.
-- [ ] **agent-browser npm vulnerability** — upstream (#116774); fixed by a future `hermes update`.
+- [ ] **`cua-driver`** — installed by default by `hermes update` (computer use stays disabled); review whether to opt out (`hermes pm install --without cua-driver`).
+- [ ] **Test other orchestrator models** (installed ones first; `deepseek-r1:14b` is weak at tool calling), then look for models known to work well with Hermes.
+- [ ] **Hermes-4-14B at 64K via YaRN** (llama.cpp directly, `q8_0` KV cache) vs. `gpt-oss:20b-64k`; follow issue #53347 / PR #32770 (`allow_short_context`). The GGUF stays installed for this.
+- [ ] **Multiple Hermes profiles** — different agents/models per profile, each with its own Telegram bot; CLI state shared (default). After the current stages.
+- [ ] **SearXNG instead of DuckDuckGo** for Hermes (and the Crew's `buscar_web`).
+- [ ] **Vision capability auto-detection** in the wizard (9.6) — report upstream only if it persists.
+- [ ] **npm vulnerabilities** in agent-browser / web / ui-tui workspaces — upstream lockfiles; fixed by future `hermes update`s.
 
 **Infrastructure**
 
-- [ ] **Backup & restore procedure** — write and test it for everything in Section 0.2 (now including Qdrant storage, Mem0 server Postgres/history and `.env`, and `~/.hermes`) before the next Ubuntu wipe. Highest priority for a reinstall guide.
-- [ ] **Lock files per venv** — `pip freeze > requirements.lock.txt` in each venv, committed (`crewai` is unpinned).
+- [ ] **Backup & restore procedure** — write and test it for everything in Section 0.2 before the next Ubuntu wipe. Highest priority for a reinstall guide. (A one-off `~/.hermes` backup exists: `~/backups/hermes-pre-update-2026-09-30.tar.gz`, 853 MB, mode 600.)
 - [ ] **Paperclip LAN access** — likely `PAPERCLIP_ALLOWED_HOSTNAMES=<LOCAL_IP>` in `.env`, then recreate (8.3 + 8.4). Untested.
 - [ ] **Remote access (Section 3.5)** — VPN (e.g. Tailscale); not yet configured.
-- [ ] **OpenUI (Weights & Biases) via Docker** — planned, not installed (checked 2026-09-28).
+- [ ] **OpenUI (Weights & Biases) via Docker** — planned, not installed.
 - [ ] **"Coding" agent (remote terminal assistant)** — e.g. Letta Code / App Server. Not yet evaluated.
 
-**Done in this stage (2026-09-28 → 2026-09-29)**
+**Done in stage 11 (2026-09-29 → 2026-10-01)**
 
-- [x] **`OLLAMA_MAX_LOADED_MODELS`** re-confirmed at `1`, then raised to `2` (Section 2.3).
-- [x] **Legacy `custom_providers` removed** from `~/.hermes/config.yaml` (Section 9.7).
-- [x] **Qdrant as a standalone server** (Section 10.2).
-- [x] **Mem0 Docker server** — patched for Ollama + Qdrant (Section 10).
-- [x] **`MEM0_TELEMETRY=false`** — applied on the Mem0 server.
-- [x] **Hermes memory provider** — Mem0 server, shared `user_id`, auto-sync block, `SOUL.md` rules, weekly report + timer (Sections 10.7–10.9).
-- [x] **Neo4j** — confirmed unused by Mem0 2.x; stopped, port 7687 closed (Section 5.2).
-- [x] **Hermes-4-14B GGUF** — decision: keep for the YaRN test.
+- [x] **Crew memory via the Mem0 server API** — `mem0_tools.py`, `MEM0_INFER` configurable (default `true`), cross-validation Crew ↔ Hermes in both directions (Section 7.3).
+- [x] **Per-client API keys** — admin user `rizzo`, keys `crewai` and `hermes`, `mem0_admin.py`; `ADMIN_API_KEY` kept for emergencies and `mem0_report.py` (Section 10.12).
+- [x] **Legacy Mem0 retired** — `qdrant_data/`, `venv-mem0`, `config.py`, `test_mem0.py`, `crewai_mem0_example.py`, and `mem0ai`/spaCy/fastembed from the CrewAI venv (~420 MB). Neo4j kept.
+- [x] **Hermes updated** (v0.21.5 build 3714 → 5130, config v46 → v49), backup before, doctor + memory status + canary before/after (Section 10.10).
+- [x] **`SOUL.md` anti-hallucination rule** — a canary failed before the update (Hermes wrote "Saved to memory" without calling `mem0_add`); new rule + 5 canaries in fresh sessions = 5/5 real saves (Section 10.8).
+- [x] **`qwen3-14b-32k` variant** — 40K spilled to CPU at half the speed; 32K fits 100% GPU (Section 2.4).
+- [x] **Personal Crew** (Researcher, Writer, Critic), YAML config, `run_crew.py`, web search tool, `Process.sequential`, called by Hermes (Section 7).
 
 **Done earlier**
 
-- [x] Mem0 optional extras (spaCy + fastembed in the CrewAI venv); `chromadb`/`posthog` conflict (pinned `posthog<6.0.0`); Paperclip installed; Hermes Agent reinstalled and validated; Hermes vision config root cause; Section 9 cleanup.
+- [x] Stage 10 (2026-09-28 → 29): `OLLAMA_MAX_LOADED_MODELS=2`; legacy `custom_providers` removed; Qdrant server; patched Mem0 server; `MEM0_TELEMETRY=false`; Hermes memory provider + auto-sync block + `SOUL.md` rules + weekly report/timer; Neo4j stopped; Hermes-4-14B GGUF kept for the YaRN test.
+- [x] Before: Paperclip installed; Hermes Agent reinstalled and validated; Hermes vision config root cause; Section 9 cleanup.
 
 ## Notes
 
@@ -1223,10 +1414,10 @@ Monthly, across reports: many false negatives → Hermes saves too little; recon
 - Ollama is intentionally kept native, not dockerized — see the note at the top of Section 3.
 - Section 3.5 (remote access) is a placeholder until that setup is actually done.
 - Section 5 (Mem0 library) is legacy since 2026-09-29; the shared memory is the Mem0 server (Section 10).
-- Section 7 (CrewAI) runs in its own venv, separate from Mem0's (Section 5) — while it still uses the embedded Qdrant, the two must never have that data open at the same time (see the note in 5.5).
+- Section 7 (CrewAI) runs in its own Python 3.12 venv; Crews are defined in YAML (`crews/<name>/`) and run by `run_crew.py`. Hermes calls it via `venv/bin/python` by absolute path, so no activation is needed there.
 - Sections 8 (Paperclip), 9 (Hermes Agent) and 10 (`mem0-server-src`) include nested git repos inside `~/Projects/AI` — see the `.gitignore` note in Section 6 before running any `git` commands at the repo root.
 - Hermes Agent's config/secrets live entirely outside the repo at `~/.hermes`; the memory-related pieces (`mem0.json`, `SOUL.md` rules) are written out in Section 10 so they can be recreated.
-- `~/Projects/AI/modelfiles/` (Section 2.4) **is** tracked by git — it holds the Modelfiles for the `-64k` context variants.
+- `~/Projects/AI/modelfiles/` (Section 2.4) **is** tracked by git — it holds the Modelfiles for the context variants (`-64k`, `qwen3-14b-32k`).
 - The `OLLAMA_MAX_LOADED_MODELS=2` systemd override (Section 2.3) is a global Ollama setting — it affects every model call from every section of this guide. Ollama still refuses to load a second model that doesn't fit, so two big models never share the GPU.
 - Every running Docker container in this guide uses the `unless-stopped` restart policy (standardized on 2026-09-27 — see 3.2). Exception: `neo4j-mem0`, intentionally stopped with `no` (Section 5.2).
 - Every service added in Section 10 binds to `127.0.0.1` only; nothing new is exposed to the LAN.
