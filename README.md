@@ -754,7 +754,7 @@ Timeouts: Hermes's `terminal.timeout` is **180 s** (`~/.hermes/config.yaml`) and
 
 ## 8. Paperclip Agent Manager (Docker)
 
-![Paperclip](paperclip.png)
+![Paperclip](images/paperclip.png)
 
 Open-source orchestration platform ([paperclipai/paperclip](https://github.com/paperclipai/paperclip)) that manages a team of AI agents (CrewAI, Claude Code, Codex, etc.) like employees in a company — org chart, tickets, budgets, governance. Will also be used in the future "Get Contractors Now" project.
 > **Why Docker and not native (Node/pnpm):** Paperclip doesn't touch the GPU, so the reason Ollama stays native doesn't apply here. Docker was chosen for isolation and portability, matching the Open WebUI approach — the official install path builds the image locally from source (no pre-built image to just pull), so the repo still needs to be cloned either way.
@@ -840,7 +840,7 @@ docker update --restart unless-stopped docker-paperclip-1
 
 ## 9. Hermes Agent (Orchestrator for the CrewAI Team)
 
-![Hermes](HermesChat.png)
+![Hermes](images/HermesChat.png)
 
 Autonomous agent framework from Nous Research ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)), used to orchestrate/delegate work to the CrewAI team (Section 7) — first the personal Crew, later per-project Crews (e.g. "Get Contractors Now"). Fully local via Ollama, same as everything else in this stack.
 
