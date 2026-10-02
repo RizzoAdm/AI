@@ -1,0 +1,71 @@
+# ============================================================
+# Crew pessoal - TASKS (rodam na ordem em que aparecem aqui)
+# Guia rapido de edicao:
+#   agent:   qual agente (nome no agents.yaml) executa a task
+#   context: de quais tasks anteriores esta task recebe o resultado.
+#            Controla o tamanho do contexto: passe so o necessario.
+#   description / expected_output: o que fazer e o formato da entrega.
+#   {pedido} e substituido pelo pedido do usuario.
+# Indentacao: sempre 2 espacos, nunca TAB.
+# ============================================================
+
+pesquisa:
+  agent: pesquisador
+  context: []
+  description: |
+    User request: "{pedido}"
+
+    1. Use buscar_memoria to check what is already known about the user and this topic.
+    2. Use buscar_web as needed (a few focused searches).
+    3. If you learn a durable fact about the user or their plans, save it with
+       salvar_memoria (one short sentence). Do not save general web facts.
+    Write in the same language as the user request.
+  expected_output: |
+    A research brief of at most 600 words: key findings as bullet points, each with
+    its source link, plus a short "Uncertainties" section. Never invent links.
+
+rascunho:
+  agent: redator
+  context: [pesquisa]
+  description: |
+    User request: "{pedido}"
+
+    Write a first draft that fully answers the request, using only the research brief.
+    Choose the format the request implies (email, message, summary, plan, guide).
+    Keep the source links for factual claims.
+    Write in the same language as the user request.
+  expected_output: A complete draft with source links, ready to be reviewed.
+
+critica:
+  agent: critico
+  context: [rascunho]
+  description: |
+    User request: "{pedido}"
+
+    Review the draft critically: does it answer the request? Are there errors,
+    unsupported claims, missing points, unclear parts or tone problems?
+    You cannot open links: never claim a link is broken, or a date is wrong, unless
+    the draft itself proves it; mark it as "unverified" instead. Treat the date
+    given at the top as the current date.
+    Always end with the verdict line.
+    Write in the same language as the user request.
+  expected_output: |
+    A numbered list of only the real problems (at most 8; fewer is better; zero is
+    fine), each with: the problem, why it matters to the user, and a concrete fix.
+    No duplicates. Do not suggest removing or replacing source links, or adding
+    notes about the sources themselves.
+    End with a verdict: "approve", "minor changes" or "major changes".
+
+final:
+  agent: redator
+  context: [rascunho, critica]
+  description: |
+    User request: "{pedido}"
+
+    Produce the final version of the draft, applying the critic's fixes that are
+    correct and make the answer more useful to the user. Reject suggestions that
+    are wrong, duplicated, cosmetic, or that add notes about the sources themselves.
+    At the very end, add a section "Rejected suggestions" listing each rejected
+    item in one line with the reason (or "none").
+    Write in the same language as the user request.
+  expected_output: The final, polished answer to the user request, with source links.
