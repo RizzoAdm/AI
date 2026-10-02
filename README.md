@@ -21,6 +21,8 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 
 ## Hardware Reference
 
+![Fastfetch](images/fastfetch.png)
+
 | Component   | Spec                                                                   |
 | ----------- | ---------------------------------------------------------------------- |
 | CPU         | AMD Ryzen 9 5950X                                                      |
