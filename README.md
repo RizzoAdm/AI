@@ -224,6 +224,8 @@ Spilling only 12% to the CPU halved the generation speed. Measure with `ollama r
 
 ## 3. Open WebUI (Docker)
 
+![Open WebUI](images/OpenWebUI.png)
+
 > **Why Ollama stays native and isn't dockerized:** with a dedicated NVIDIA GPU, native Ollama uses the system driver directly with zero extra config. Dockerizing it would require installing and maintaining the NVIDIA Container Toolkit just for GPU passthrough, with no real benefit on a single-machine setup. Open WebUI itself doesn't touch the GPU (it's just the web interface), so only it needs to be containerized — the NVIDIA Container Toolkit step is skipped entirely.
 
 ### 3.1 Install Docker
@@ -1062,6 +1064,10 @@ Key facts that shaped the design:
 ```
 
 ### 10.2 Qdrant server
+
+![Qdrant](images/Qdrant.png)
+
+![Qdrant Dashboard](images/Qdrant_dashboard.png)
 
 Terminal, no venv:
 
