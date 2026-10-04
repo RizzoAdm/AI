@@ -16,6 +16,7 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 - [8. Paperclip Agent Manager](#8-paperclip-agent-manager-docker) — clone, `.env` secret, Docker Compose, restart policy, first login, verify, updating
 - [9. Hermes Agent](#9-hermes-agent-orchestrator-for-the-crewai-team) — official installer, model choice (`gpt-oss:20b`), 64K variants, wizard choices, config fixes, validation tests, troubleshooting, first-install history (9.12)
 - [10. Shared Memory — Mem0 Server + Qdrant Server](#10-shared-memory--mem0-server-docker--qdrant-server) — Qdrant in Docker, patched Mem0 server (Ollama + Qdrant), Hermes memory provider, auto-sync block, `SOUL.md` memory rules, weekly validation report + timer, per-client API keys (10.12)
+- [11. Telegram Bot (Hermes Gateway)](#11-telegram-bot-hermes-gateway) — BotFather, secrets in `~/.hermes/.env`, auto-installed `python-telegram-bot`, gateway as a `systemd` user service, `/sethome`, long-message splitting, Crew without `--verbose`, validation, quick guide to using the bot (11.9)
 - [Pending / To Investigate](#pending--to-investigate) — open items
 - [Notes](#notes) — cross-cutting reminders
 
@@ -58,8 +59,8 @@ By design (see `.gitignore`, Section 6), the repo holds no data and no secrets. 
 - Neo4j data (Section 5, stopped, empty) — `ai-agents/mem0/neo4j/` (the legacy `qdrant_data/` was deleted on 2026-09-30)
 - Crew run outputs (Section 7) — `ai-agents/crewai/outputs/` (personal content, optional)
 - Paperclip data — `ai-agents/paperclip/data/`
-- Hermes Agent config/data — `~/.hermes/` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`, sessions, memories); outside the repo by design (Section 9.1). The memory-related pieces are also written out in Section 10.
-- Every `.env` file (Neo4j password, Paperclip's `BETTER_AUTH_SECRET`, Mem0 server's `POSTGRES_PASSWORD`/`JWT_SECRET`/`ADMIN_API_KEY`, the Crew's `MEM0_API_KEY` in `ai-agents/crewai/.env`) — also keep these values, and the Mem0 server admin login (Section 10.12), in a password manager
+- Hermes Agent config/data — `~/.hermes/` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`, sessions, memories); outside the repo by design (Section 9.1). The memory-related pieces are also written out in Section 10; the Telegram pieces in Section 11. `~/.hermes/.env` also holds the Telegram bot token.
+- Every `.env` file (Neo4j password, Paperclip's `BETTER_AUTH_SECRET`, Mem0 server's `POSTGRES_PASSWORD`/`JWT_SECRET`/`ADMIN_API_KEY`, the Crew's `MEM0_API_KEY` in `ai-agents/crewai/.env`, the `TELEGRAM_BOT_TOKEN` in `~/.hermes/.env`) — also keep these values, and the Mem0 server admin login (Section 10.12), in a password manager
 - Optional: Ollama models (`/usr/share/ollama/.ollama/models`, ~110GB) — re-downloadable, just slow
 
 > The backup/restore procedure itself isn't written yet — see Pending.
@@ -338,6 +339,8 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 - [ ] Mem0 server: `/docs` returns HTTP 200, a request without key returns 401, and add/search work (Section 10.6)
 - [ ] `hermes memory status` shows `Provider: mem0` + `available ✓`, and the canary test passes (Section 10.8)
 - [ ] `systemctl --user list-timers mem0-report.timer --no-pager` shows the next Monday run (Section 10.9)
+- [ ] `hermes gateway status` shows `hermes-gateway.service` active + linger enabled, the log shows `Connected to Telegram (polling mode)`, and the bot answers a simple message (Section 11.4)
+- [ ] From Telegram: a memory canary is confirmed in `docker logs mem0-server` and a Crew request creates a new folder in `crewai/outputs/pessoal/` (Section 11.8)
 - [ ] Every running container uses the `unless-stopped` restart policy (`neo4j-mem0` is intentionally stopped with `no` — Section 5.2):
 
 ```
@@ -656,6 +659,8 @@ python run_crew.py pessoal "seu pedido aqui"              # only the final answe
 python run_crew.py pessoal "seu pedido aqui" --verbose    # also shows every agent's reasoning and tool calls
 ```
 
+> **`--verbose` is for terminal runs only.** Hermes (CLI or Telegram) never adds it — the log would fill its context (decided 2026-10-03, Section 11.7).
+
 What it does: disables CrewAI telemetry (`CREWAI_DISABLE_TELEMETRY`, `OTEL_SDK_DISABLED`); reads the two YAML files; builds each agent with `LLM(model="ollama/<model>", base_url="http://localhost:11434", temperature=...)`; maps tool names from the YAML to tool objects (an unknown name stops with an error listing the valid ones); uses `agent_id = crew-<crew name>` for memory; prepends **`Today's date: YYYY-MM-DD.`** to every task (models don't know the date — see 7.6); runs with `Process.sequential` and `memory=False`; saves `pedido.md` plus one `<n>_<task>.md` per task in `outputs/<crew>/<YYYY-MM-DD_HHMM>_<topic>/`; prints the final answer and, as the last line, `OUTPUT_DIR=<folder>`.
 
 ### 7.4 The personal Crew
@@ -723,7 +728,7 @@ python -c "import yaml; a=yaml.safe_load(open('crews/pessoal/agents.yaml')); t=y
 
 ### 7.6 Hermes ↔ Crew integration
 
-Hermes calls the Crew through its **terminal tool**, using the venv's Python by absolute path (no activation needed, works from any folder). Section appended to `~/.hermes/SOUL.md` (backup: `SOUL.md.bak-pre-crew`; outside the repo, so the full text is kept here):
+Hermes calls the Crew through its **terminal tool**, using the venv's Python by absolute path (no activation needed, works from any folder). Section appended to `~/.hermes/SOUL.md` (backup: `SOUL.md.bak-pre-crew`; outside the repo, so the full text is kept here). The `--verbose` sentence was changed in stage 12 (backup `SOUL.md.bak-pre-telegram`, Section 11.7):
 
 ```
 ## Personal crew (CrewAI)
@@ -731,7 +736,7 @@ Hermes calls the Crew through its **terminal tool**, using the venv's Python by 
 - Use it ONLY when the user asks for the crew/team, or explicitly asks for researched and reviewed work (comparisons, summaries, guides, plans, emails based on research). For quick questions, answer yourself.
 - Run it with the terminal tool, using exactly this command (one line):
   /home/guilherme/Projects/AI/ai-agents/crewai/venv/bin/python /home/guilherme/Projects/AI/ai-agents/crewai/run_crew.py pessoal "<the user's request, in the user's own language>"
-- Put the request inside double quotes and escape any double quotes inside it. Add --verbose at the end only if the user asks to see the agents working.
+- Put the request inside double quotes and escape any double quotes inside it. Never add --verbose (its log fills your context). If the user wants to see the agents working, tell them to run the crew in a terminal with --verbose.
 - It takes 1 to 3 minutes. If the terminal tool accepts a timeout, use at least 400 seconds. Wait for it to finish and never start it twice for the same request.
 - The last line of the output is OUTPUT_DIR=<folder>. Reply with the final answer printed before that line, without rewriting or shortening it, then tell the user the folder path.
 - If the command fails, show the error message. Never invent or summarize a result the crew did not produce.
@@ -908,7 +913,7 @@ Navigate only with arrows / Enter / Space / Esc — **never Ctrl+C** (Section 9.
 | Display name | default (`Local (localhost:11434)`) | Cosmetic |
 | Reasoning effort | `medium` | Changeable per session with `/reasoning` |
 | Terminal backend | **Keep current (local)** | Same machine |
-| Messaging platforms | none (Enter with nothing checked) | Can be added later: `hermes setup gateway` |
+| Messaging platforms | none (Enter with nothing checked) | Telegram added later in stage 12 by editing `~/.hermes/.env` (Section 11) |
 | Tools (CLI) | see 9.5 | |
 | Browser provider | **Local Browser** | Headless Chromium, free |
 | Vision backend | Pick a provider and model → Local → Type a custom model id → `gemma4:12b` | ⚠️ **Not persisted by the wizard** — fixed in 9.7 |
@@ -996,7 +1001,7 @@ Terminal, no venv. After each `hermes chat -q ...`, Hermes stays in interactive 
 - **Ctrl+C during `hermes setup` cancels the entire wizard** and falls into a Nous Portal login flow. If that happens: Ctrl+C again to stop the polling, re-run `hermes setup`.
 - **Loop inside a chat:** use `/stop`, not Ctrl+C.
 - **`❌ Ollama runtime context is too small for Hermes tool use`**: the model's real loaded context is < 64K. Check the model's native context (`ollama show <model>`) — if it's below 64K, no config can fix it; pick another model.
-- **`hermes doctor` harmless warnings:** Nous Portal / Codex / xAI / MiniMax not logged in; OpenRouter not configured; Telegram/Discord packages not installed; several tools with "system dependency not met" (a2a, spotify, computer_use, etc. — disabled/unused); agent-browser npm vulnerability (upstream lockfile, #116774 — fixed by a future `hermes update`); Skills Hub not initialized.
+- **`hermes doctor` harmless warnings:** Nous Portal / Codex / xAI / MiniMax not logged in; OpenRouter not configured; Discord packages not installed (Telegram's is installed on demand since stage 12 — Section 11.3); several tools with "system dependency not met" (a2a, spotify, computer_use, etc. — disabled/unused); agent-browser npm vulnerability (upstream lockfile, #116774 — fixed by a future `hermes update`); Skills Hub not initialized.
 - **`SyntaxWarning: "\W" is an invalid escape sequence`** from `pm/shell.py` when a tool runs — cosmetic, Hermes code vs. Python 3.14. Ignore.
 - **`sudo systemctl edit ollama.service` doesn't save:** stale `nano` lock file in `/etc/systemd/system/ollama.service.d/.#override.conf...` — remove it and write the override directly (Section 2.3).
 
@@ -1354,22 +1359,232 @@ Expected: `Chaves ativas: ['crewai', 'hermes']`. (The first Crew key, `crew-gcn`
 
 ---
 
+## 11. Telegram Bot (Hermes Gateway)
+
+> **✅ Status (2026-10-03): running.** Hermes answers on Telegram, restricted to a single user ID, as a `systemd` user service that starts with the machine. Memory saves and Crew runs work from Telegram; long replies are split automatically.
+
+```
+You (Telegram app) ──> Telegram servers ──(long polling, no open port)──> hermes-gateway.service (systemd --user)
+                                                                            ├─ Hermes agent (gpt-oss:20b-64k) — same SOUL.md, memory and tools as the CLI
+                                                                            ├─ Mem0 server (Section 10)
+                                                                            ├─ Personal Crew via terminal tool (Section 7.6)
+                                                                            └─ Hermes cron scheduler → results go to the "home channel"
+```
+
+**Polling, not webhook:** the gateway asks Telegram for new messages, so no port is opened on the router and nothing is exposed to the internet.
+
+### 11.1 Create the bot (BotFather) and find your user ID
+
+Done in the Telegram app (phone or desktop) — no terminal.
+
+1. Search **@BotFather** (check the blue verified badge — there are fakes) → **Start** → `/newbot`.
+2. Display name: free text (e.g. `Hermes Rizzo`). Username: unique, must end in `bot` (e.g. `hermes_rizzo_bot`).
+3. BotFather replies with the **token** (`123456789:ABCdef...`). **It's a secret** — whoever has it controls the bot. Keep it in the password manager; never paste it into a chat or a command line. If it leaks: `/revoke` in BotFather generates a new one.
+4. Search **@userinfobot** → **Start** → it replies with your numeric **Id**. Not a secret; it's what restricts the bot to you.
+
+Official references:
+- Telegram — bot tutorial: https://core.telegram.org/bots/tutorial
+- Telegram — BotFather commands: https://core.telegram.org/bots/features#botfather
+- Hermes Agent — Telegram setup: https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/messaging/telegram.md
+- Hermes Agent — `TELEGRAM_ALLOWED_USERS` and pairing: https://github.com/NousResearch/hermes-agent/blob/main/website/docs/guides/team-telegram-assistant.md
+
+### 11.2 Secrets — `~/.hermes/.env`
+
+Terminal, any folder, no venv. Backup first, then check which Telegram variables exist (prints **names only**, never values):
+
+```
+cp ~/.hermes/.env ~/.hermes/.env.bak-etapa12
+grep -o '^TELEGRAM_[A-Z_]*' ~/.hermes/.env
+```
+
+Add the variables **with `nano`**, so the token never appears in a command or in the shell history:
+
+```
+nano ~/.hermes/.env
+```
+
+At the end of the file (paste in the terminal with `Ctrl+Shift+V`; no spaces around `=`, no quotes):
+
+```
+# Telegram (etapa 12)
+TELEGRAM_BOT_TOKEN=<token from BotFather>
+TELEGRAM_ALLOWED_USERS=<your numeric user ID>
+```
+
+Save with `Ctrl+O`, Enter; exit with `Ctrl+X`. Confirm with the `grep` above — expected `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS`.
+
+`TELEGRAM_ALLOWED_USERS` takes a comma-separated list; only those IDs can talk to the bot. The wizard (`hermes gateway setup`) was **not** used: the variables were already in place, and running it could overwrite them.
+
+### 11.3 `python-telegram-bot` — installed automatically (don't `pip install`)
+
+Hermes **lazy-installs** messaging backends on first use (comment in `pyproject.toml`: telegram/slack/… are "prepared on demand by PM", Hermes's own package manager), pinned to `python-telegram-bot[webhooks]==22.8`. On the first gateway start with a token present, the log shows `Installing Python dependencies… ✓`. **Do not install it by hand** — a manual install could pick another version and is lost on `hermes update`.
+
+Where Hermes's Python actually lives (useful for debugging; found while looking for the package):
+
+```
+~/.local/bin/hermes                                   # #!/bin/sh wrapper →
+~/Projects/AI/ai-agents/hermes-agent/.hermes/bin/hermes   # #!/bin/sh launcher → runs, isolated (-I):
+~/.hermes/tools/python-3.14.7+.../bin/python3         # bundled Python
+~/.hermes/installs/<hash>/environments/<hash>/venv/   # managed venv with the packages (no pip inside)
+```
+
+`.hermes/` inside `hermes-agent/` is **not** a venv (no Python in its `bin/`), and the managed venv has **no `pip`** — so `hermes --run-module pip ...` fails by design. To see which folders Hermes loads packages from (read-only):
+
+```
+hermes --run-module site
+```
+
+### 11.4 Gateway as a service (`hermes-gateway.service`)
+
+The gateway was **already installed** as a `systemd` user service (`enabled`, linger on — survives logout and reboot) because it also runs Hermes's **cron scheduler**. Before stage 12 it ran with `No messaging platforms enabled`; a restart made it pick up the token. Fresh install: `hermes gateway install`.
+
+Terminal, any folder, no venv:
+
+```
+hermes -p default gateway restart          # after any change to ~/.hermes/.env, config.yaml or SOUL.md
+hermes gateway status                       # service state + last log lines
+journalctl --user -u hermes-gateway -f      # live log; Ctrl+C only closes the view, the gateway keeps running
+```
+
+Healthy start: `Installing Python dependencies` (first time only) → `Connecting to Telegram (attempt 1/8)…` → `Connected to Telegram (polling mode)` (~13 s; it probes fallback routes first).
+
+> `hermes gateway run` (foreground) refuses while the service is running: `The host gateway already serves profile 'default' — nothing to start`. With the service installed, "test mode" = restart + follow the log.
+> After editing `SOUL.md`, also send **`/new`** in Telegram — the file is read when a session starts.
+
+### 11.5 Home channel (`/sethome`)
+
+Send `/sethome` to the bot once. That chat becomes the destination for **Hermes cron job results** and cross-platform messages, and the "No home channel is set" notice stops appearing at every new session. It does not change who can use the bot (`TELEGRAM_ALLOWED_USERS` does) and does not affect the Mem0 weekly report (a separate `systemd` timer, Section 10.9). Set on 2026-10-03.
+
+### 11.6 Long replies (> 4,096 characters)
+
+Telegram rejects messages over 4,096 characters (counted in UTF-16). **Hermes splits them natively** — nothing was added:
+
+- Function `split_text_fence_aware` (`gateway/platforms/helpers.py`), called from `gateway/stream_consumer_fallback.py`: **cuts preferably at line breaks**, keeps code blocks (```) balanced across parts, measures in UTF-16 (the Telegram unit).
+- Parts are **numbered** (`(1/2)`, `(2/2)`) and sent back-to-back, with an automatic **retry per part** if Telegram asks to slow down (flood control / HTTP 429). No pause between parts was added (decided 2026-10-03; revisit only if parts ever go missing).
+- Tested: a ~1,200-word answer arrived as 2 parts, **cut at the end of a paragraph**.
+- Known limit: a single paragraph longer than 4,096 characters (no line break inside) would be hard-cut, possibly mid-sentence. Rare; watch for it.
+
+### 11.7 The Crew from Telegram — without `--verbose`
+
+Decision (2026-10-03): **Hermes never runs the Crew with `--verbose`, Telegram included.** The verbose log only reaches Hermes's tool result, not Telegram: the model would have to rewrite tens of thousands of characters, and the log fills `gpt-oss`'s 64K context (raising the risk of cut or distorted answers — as when it dropped "Rejected suggestions"). Telegram gets Hermes's normal answer; `--verbose` is for terminal runs (7.3).
+
+`SOUL.md` change (backup: `~/.hermes/SOUL.md.bak-pre-telegram`), in the "Personal crew (CrewAI)" section (full text in 7.6):
+
+```
+cp ~/.hermes/SOUL.md ~/.hermes/SOUL.md.bak-pre-telegram
+sed -i 's|Add --verbose at the end only if the user asks to see the agents working\.|Never add --verbose (its log fills your context). If the user wants to see the agents working, tell them to run the crew in a terminal with --verbose.|' ~/.hermes/SOUL.md
+grep -n 'verbose' ~/.hermes/SOUL.md
+```
+
+Then `hermes -p default gateway restart` and `/new` in Telegram.
+
+> Considered and **not** built (kept as a future option): `run_crew.py --telegram` sending the log or each task's output straight through the Bot API (bypassing the model), with sentence-boundary splitting and a 2 s+ pause between messages.
+
+### 11.8 Validation (2026-10-02 → 03)
+
+| Test | How | Result |
+|---|---|---|
+| Restricted access | `TELEGRAM_ALLOWED_USERS` = one ID | ✅ |
+| Service | `hermes gateway status` → `active (running)`, `enabled`, linger on | ✅ |
+| Simple chat | "Olá, você está funcionando?" | ✅ |
+| Memory canary | "Registre na memória de longo prazo: … TG-CANARIO-0210." → check the **server** (command below) | ✅ `Inserting 1 vectors` at the canary time, plus the expected `skip_infer` for the auto-sync |
+| Crew | "Use a crew pessoal: compare …" → new folder in `crewai/outputs/pessoal/` at the request time | ✅ (~1–2 min; reply in PT) |
+| Long reply | ~1,200-word answer | ✅ 2 numbered parts, cut at a paragraph end |
+
+Confirm a memory save on the server (terminal, no venv):
+
+```
+docker logs mem0-server --since 15m 2>&1 | grep -i -E 'add|memor|skip_infer|hermes' | tail -n 20
+```
+
+A real save = `Inserting 1 vectors into collection mem0_memories` + `POST /memories 200`; `skip_infer: agent_id=hermes` alone is just the blocked auto-sync (10.8). The gateway log (`journalctl`) does **not** show memory calls.
+
+Confirm a Crew run really happened (and Hermes didn't answer by itself):
+
+```
+ls -lt ~/Projects/AI/ai-agents/crewai/outputs/pessoal/ | head -n 4
+```
+
+### 11.9 Quick guide — using the bot
+
+**Talk normally**, in Portuguese or English. Hermes has the same memory, tools and rules as in the terminal.
+
+**Run the personal Crew** — mention the crew explicitly (otherwise Hermes answers by itself):
+
+```
+Use a crew pessoal: compare em poucos parágrafos ...
+Peça para a crew pessoal: pesquise ... e recomende uma opção.
+```
+
+Takes 1–3 minutes (the bot shows "typing"). Run only one request at a time. The final answer comes in the chat; each step's output is saved on the PC:
+
+```
+ls -t ~/Projects/AI/ai-agents/crewai/outputs/pessoal/ | head -n 1        # latest run folder
+cat ~/Projects/AI/ai-agents/crewai/outputs/pessoal/<folder>/*.md        # pedido + 4 task files
+```
+
+**See the agents working** (log): only in the terminal — `python run_crew.py pessoal "..." --verbose` (CrewAI `venv` active, Section 7.3). The bot will tell you the same.
+
+**Save to memory** — say it explicitly for a guaranteed save: "Registre na memória: …", "anota que …", "lembra que …". The reply should end with `Saved to memory: …`; `Memory NOT saved: …` means it didn't save. Confirm on the server when it matters (11.8).
+
+**Useful bot commands** (from `/help`, Hermes v0.21.5 build 5130 — the full list is longer):
+
+| Command | What it does |
+|---|---|
+| `/new` (alias `/reset`) | New session — use after changing `SOUL.md`, or to start an unrelated topic with a clean context |
+| `/stop` | Kill running background processes (e.g. a stuck command) |
+| `/pause [reason]` / `/pause off` | Emergency stop for new work / resume |
+| `/retry` | Resend the last message to the agent |
+| `/undo [N]` | Go back N user turns and re-prompt |
+| `/status` | Session, model, tokens and context usage |
+| `/context` (alias `/ctx`) | Detailed context-window gauge |
+| `/compress` (alias `/compact`) | Compress the conversation when the context gets full |
+| `/save md` | Export the current conversation (also `json`/`html`) |
+| `/sessions` / `/resume [name]` / `/title [name]` | Browse, resume and name sessions |
+| `/approve` / `/deny` | Answer a pending dangerous-command approval |
+| `/btw <question>` | Side question without interrupting the current task |
+| `/agents` (alias `/tasks`) | Active agents and running tasks |
+| `/model [model]` | Switch model for the session (`--global` persists — avoid unless planned) |
+| `/sethome` | Make this chat the home channel (11.5) |
+| `/whoami` / `/profile` | Your access level / active Hermes profile |
+
+Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approvals off` — leave them off.
+
+### 11.10 Troubleshooting
+
+- **`✓ The host gateway already serves profile 'default' — nothing to start`** on `hermes gateway run`: the service is already running — use `hermes -p default gateway restart` (11.4).
+- **`No messaging platforms enabled`** in the gateway log: the token isn't in `~/.hermes/.env`, or the gateway started before it was added — check with `grep -o '^TELEGRAM_[A-Z_]*' ~/.hermes/.env` and restart.
+- **`named custom provider 'ollama-local' has no resolvable api_key`**: harmless — local Ollama needs no key. Only a real `401` error would matter.
+- **"No home channel is set for Telegram"** at every new session: send `/sethome` (11.5).
+- **The bot doesn't answer:** `hermes gateway status`, then `journalctl --user -u hermes-gateway -f` while sending a message; check that Ollama is up (`systemctl status ollama`).
+- **Reply says the memory was saved but you doubt it:** check the server log (11.8). Seen on 2026-10-02: the reply read `Memory saved: …` (not the exact `Saved to memory: …` the rules ask for) — the save was real, but the wording drift is tracked in Pending.
+- **Crew answer without the output folder:** Hermes sometimes omits the `OUTPUT_DIR` line; find the run with `ls -lt` (11.8). Tracked in Pending.
+
+---
+
 ## Pending / To Investigate
 
 **Next stages (order agreed 2026-09-30)**
 
-- [ ] **Stage 12 — Telegram bot for Hermes** (`hermes setup gateway`; `python-telegram-bot` not installed yet). When the Crew is called from Telegram it must run with **`--verbose`**; decide how to deliver a log that exceeds Telegram's 4,096-character message limit (file attachment or split messages).
 - [ ] **Stage 13 — Paperclip** integrated with Hermes and the Crew.
 - [ ] **Stage 14 — Jarvis** ([eadmin2/jarvis_ai](https://github.com/eadmin2/jarvis_ai)) — analyze the repo, then install/run.
 
 **Personal Crew (Section 7)**
 
-- [ ] **Quality tuning of the prompts** — measured problems: the Critic (`qwen3`) answered in **English** to a Portuguese request; its critique is generic and **missed a contradiction** (To Do "5 collaborators per list" vs. "no strict limits" in the recommendation); the Writer still rejects nothing (`Rejected suggestions: none`); Hermes **dropped the "Rejected suggestions" section** when relaying, despite the "don't shorten" rule; some free-plan numbers looked doubtful (verify facts on official sites).
+- [ ] **Quality tuning of the prompts** — Telegram test (2026-10-03, Telegram vs. WhatsApp comparison) the Critic let through factual errors: bot chats called end-to-end encrypted "if enabled" (they never are), "no native payments" in the Telegram Bot API (there are), "only quick replies" on WhatsApp (it has interactive buttons/lists), "needs an HTTPS server" (polling needs none), "2 bi bilhões", India listed on both sides; asked for "a few paragraphs", got bullets; `gpt-oss` also produced broken Portuguese in a long answer ("adotei", repeated words). Earlier measured problems: the Critic (`qwen3`) answered in **English** to a Portuguese request; its critique is generic and **missed a contradiction** (To Do "5 collaborators per list" vs. "no strict limits" in the recommendation); the Writer still rejects nothing (`Rejected suggestions: none`); Hermes **dropped the "Rejected suggestions" section** when relaying, despite the "don't shorten" rule; some free-plan numbers looked doubtful (verify facts on official sites).
 - [ ] **Temperature per agent** (question for the tuning session) — yes, each agent has its own `temperature` in `agents.yaml`, even with the same model (7.5); decide the values (e.g. a more creative and a more grounded agent) and test.
 - [ ] **Next agents:** Agenda & organization and Finance & shopping (next — most useful), then Technical assistant (needs care: command access). Also to explore: Tutor, Home & maintenance, Travel & leisure, Health & routine (organization only).
 - [ ] **Update CrewAI** 1.15.22 → 1.15.23 (deliberately, with `pip check` + a test run).
 - [ ] **Old leftovers in the CrewAI venv** (`qdrant-client`, `thinc`, `neo4j`, `langchain-neo4j`, …) — optional cleanup, only with care (`pip show` → `Required-by`).
 - [ ] **Lock files per venv** — `pip freeze > requirements.lock.txt` in each venv, committed (`crewai` is unpinned).
+
+**Telegram / Hermes relay (Section 11)**
+
+- [ ] **Hermes omitted the output folder** (`OUTPUT_DIR`) when relaying the Crew's answer on Telegram — same family as dropping "Rejected suggestions": tighten the relay rule in `SOUL.md` 7.6.
+- [ ] **Save-confirmation wording drift** — on Telegram Hermes wrote `Memory saved: …` instead of the exact `Saved to memory: …` (save was real). Matters for the planned "announced without `mem0_add`" detector, which looks for the exact phrase.
+- [ ] **On-demand log / per-task outputs through the bot** (future, only if needed) — e.g. a command or `run_crew.py --telegram` sending via the Bot API with sentence-boundary splitting and a 2 s+ pause (11.7).
+- [ ] **Single paragraph > 4,096 characters** — native split would hard-cut it; adjust only if it ever happens (11.6).
+- [ ] **Update Hermes** (709 commits behind on 2026-10-02) — after stage 12, with the 10.10 routine (backup, doctor, memory status, canary) plus a Telegram test.
 
 **Memory (Section 10)**
 
@@ -1398,6 +1613,12 @@ Expected: `Chaves ativas: ['crewai', 'hermes']`. (The first Crew key, `crew-gcn`
 - [ ] **Remote access (Section 3.5)** — VPN (e.g. Tailscale); not yet configured.
 - [ ] **OpenUI (Weights & Biases) via Docker** — planned, not installed.
 - [ ] **"Coding" agent (remote terminal assistant)** — e.g. Letta Code / App Server. Not yet evaluated.
+
+**Done in stage 12 (2026-10-02 → 2026-10-03)**
+
+- [x] **Telegram bot** — BotFather bot, token + `TELEGRAM_ALLOWED_USERS` in `~/.hermes/.env` (backup `.env.bak-etapa12`), `python-telegram-bot` 22.8 auto-installed by Hermes, gateway service restarted (it was already installed), `/sethome` set (Section 11).
+- [x] **Validated from Telegram** — simple chat, memory canary confirmed on the server, a Crew run (new output folder), long reply split in numbered parts at a paragraph end.
+- [x] **No `--verbose` from Hermes** — `SOUL.md` rule changed (backup `SOUL.md.bak-pre-telegram`); log only in terminal runs.
 
 **Done in stage 11 (2026-09-29 → 2026-10-01)**
 
@@ -1429,3 +1650,4 @@ Expected: `Chaves ativas: ['crewai', 'hermes']`. (The first Crew key, `crew-gcn`
 - The `OLLAMA_MAX_LOADED_MODELS=2` systemd override (Section 2.3) is a global Ollama setting — it affects every model call from every section of this guide. Ollama still refuses to load a second model that doesn't fit, so two big models never share the GPU.
 - Every running Docker container in this guide uses the `unless-stopped` restart policy (standardized on 2026-09-27 — see 3.2). Exception: `neo4j-mem0`, intentionally stopped with `no` (Section 5.2).
 - Every service added in Section 10 binds to `127.0.0.1` only; nothing new is exposed to the LAN.
+- The Telegram gateway (Section 11) uses long polling: it opens no port and needs no router change. Who can use the bot is controlled by `TELEGRAM_ALLOWED_USERS` in `~/.hermes/.env`.
