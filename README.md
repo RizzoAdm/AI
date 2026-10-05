@@ -13,7 +13,7 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 - [5. Mem0 — Agent Memory Layer](#5-mem0--agent-memory-layer-venv-graph-memory) — **legacy/retired** library setup; Neo4j + APOC (stopped, kept for the Graphiti evaluation)
 - [6. Git — `~/Projects/AI` repo](#6-git--projectsai-repo) — `.gitignore`, nested repos
 - [7. CrewAI — Personal Crew](#7-crewai--personal-crew-venv-yaml-config-mem0-api-called-by-hermes) — Python 3.12 venv, memory/web tools, `run_crew.py`, YAML config + quick editing guide (7.5), Hermes ↔ Crew integration, troubleshooting
-- [8. Paperclip Agent Manager](#8-paperclip-agent-manager-docker) — clone, `.env` secret, Docker Compose, restart policy, first login, verify, updating
+- [8. Paperclip Agent Manager](#8-paperclip-agent-manager-native-systemd-user-service) — **native** (Node 24 via nvm, managed install, `systemd` user service), why it left Docker, Hermes as CEO via CLI (`hermes_local`), `pc-finish`/`pc-crew` helpers, `AGENTS.md`, logs, updating Paperclip and Node, Docker history (8.12)
 - [9. Hermes Agent](#9-hermes-agent-orchestrator-for-the-crewai-team) — official installer, model choice (`gpt-oss:20b`), 64K variants, wizard choices, config fixes, validation tests, troubleshooting, first-install history (9.12)
 - [10. Shared Memory — Mem0 Server + Qdrant Server](#10-shared-memory--mem0-server-docker--qdrant-server) — Qdrant in Docker, patched Mem0 server (Ollama + Qdrant), Hermes memory provider, auto-sync block, `SOUL.md` memory rules, weekly validation report + timer, per-client API keys (10.12)
 - [11. Telegram Bot (Hermes Gateway)](#11-telegram-bot-hermes-gateway) — BotFather, secrets in `~/.hermes/.env`, auto-installed `python-telegram-bot`, gateway as a `systemd` user service, `/sethome`, long-message splitting, Crew without `--verbose`, validation, quick guide to using the bot (11.9)
@@ -58,9 +58,9 @@ By design (see `.gitignore`, Section 6), the repo holds no data and no secrets. 
 - Shared memories (current, Section 10) — `ai-agents/qdrant/storage/` (Qdrant server data) and `ai-agents/mem0-server/postgres-data/` + `ai-agents/mem0-server/history/` (Mem0 server auth DB and audit trail)
 - Neo4j data (Section 5, stopped, empty) — `ai-agents/mem0/neo4j/` (the legacy `qdrant_data/` was deleted on 2026-09-30)
 - Crew run outputs (Section 7) — `ai-agents/crewai/outputs/` (personal content, optional)
-- Paperclip data — `ai-agents/paperclip/data/`
+- Paperclip data (Section 8, native since 2026-10-05) — `~/.paperclip/` (outside the repo): `instances/default/` holds the config, the embedded Postgres database (companies, agents, issues, comments), run logs, agent workspaces and the automatic hourly DB backups (`data/backups/`); `cli/` holds the managed install (re-installable). The helper scripts and the Hermes `AGENTS.md` **are** in the repo (`ai-agents/paperclip-native/`).
 - Hermes Agent config/data — `~/.hermes/` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`, sessions, memories); outside the repo by design (Section 9.1). The memory-related pieces are also written out in Section 10; the Telegram pieces in Section 11. `~/.hermes/.env` also holds the Telegram bot token.
-- Every `.env` file (Neo4j password, Paperclip's `BETTER_AUTH_SECRET`, Mem0 server's `POSTGRES_PASSWORD`/`JWT_SECRET`/`ADMIN_API_KEY`, the Crew's `MEM0_API_KEY` in `ai-agents/crewai/.env`, the `TELEGRAM_BOT_TOKEN` in `~/.hermes/.env`) — also keep these values, and the Mem0 server admin login (Section 10.12), in a password manager
+- Every `.env` file (Neo4j password, Mem0 server's `POSTGRES_PASSWORD`/`JWT_SECRET`/`ADMIN_API_KEY`, the Crew's `MEM0_API_KEY` in `ai-agents/crewai/.env`, the `TELEGRAM_BOT_TOKEN` in `~/.hermes/.env`) — also keep these values, and the Mem0 server admin login (Section 10.12), in a password manager
 - Optional: Ollama models (`/usr/share/ollama/.ollama/models`, ~110GB) — re-downloadable, just slow
 
 > The backup/restore procedure itself isn't written yet — see Pending.
@@ -302,7 +302,7 @@ sudo ufw status
 sudo ufw allow 8080/tcp   # if ufw is active and the port isn't allowed
 ```
 > Consider setting a DHCP reservation for this machine on the router so the local IP doesn't change on reboot.
-> **ufw only governs Open WebUI here because it uses the host network.** Containers that publish ports with `-p` (Neo4j, Paperclip) bypass ufw entirely — Docker writes its own iptables rules — which is why Neo4j is bound to `127.0.0.1` in Section 5.2.
+> **ufw only governs Open WebUI here because it uses the host network.** Containers that publish ports with `-p` (e.g. Neo4j) bypass ufw entirely — Docker writes its own iptables rules — which is why Neo4j is bound to `127.0.0.1` in Section 5.2. (The old Docker Paperclip had the same problem: port 3100 was open to the LAN. The native Paperclip listens on `127.0.0.1` only — Section 8.)
 
 ### 3.5 Remote Access (internet)
 
@@ -319,7 +319,7 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 **Base stack (Sections 1–3):**
 
 - [ ] `nvidia-smi` shows the RTX 4080 SUPER correctly
-- [ ] `ollama list` shows all 10 models (Section 2.2) plus the 2 `-64k` variants (Section 2.4)
+- [ ] `ollama list` shows all 10 models (Section 2.2) plus the 3 context variants (Section 2.4)
 - [ ] `systemctl show ollama -p Environment --value | tr ' ' '\n' | grep OLLAMA` prints `OLLAMA_MAX_LOADED_MODELS=2` (Section 2.3)
 - [ ] `sudo systemctl is-enabled docker` returns `enabled`
 - [ ] Open WebUI loads at `http://localhost:8080`
@@ -328,12 +328,12 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 - [ ] Open WebUI reachable from another device via `http://<LOCAL_IP>:8080`
 - [ ] Admin account created; additional family user accounts added
 
-**Agents stack (Sections 5–10)** — check after finishing those sections:
+**Agents stack (Sections 5–11)** — check after finishing those sections:
 
 - [ ] `python run_crew.py pessoal "..."` (Section 7.3, CrewAI `venv` active) prints a final answer and `OUTPUT_DIR=`, and that folder has `pedido.md` + 4 task files
 - [ ] In `hermes`, "Peça para a crew pessoal: ..." runs the Crew through the terminal tool and relays the answer + folder (Section 7.6)
 - [ ] `python3 mem0_admin.py list-keys` (inside `ai-agents/mem0-server`, no venv) shows the `crewai` and `hermes` keys (Section 10.12)
-- [ ] Paperclip loads at `http://localhost:3100`, and the checks in Section 8.6 print `ENV OK` and `SECRET MATCHES`
+- [ ] Paperclip: `paperclipai service status` shows `"active": true` and `"health": {"ok": true}`, `http://localhost:3100` opens the dashboard, and a test issue assigned to Hermes ends **Done** with a clean comment; a "use a crew pessoal" issue ends Done with an `Arquivos: …` line (Section 8.9)
 - [ ] Hermes Agent: `hermes doctor` shows no `✗` lines, and the 4 tests in Section 9.10 pass (basic chat, `-c 65536` in the Ollama logs, tool calling, vision)
 - [ ] Qdrant answers at `curl -s http://localhost:6333/` (Section 10.2)
 - [ ] Mem0 server: `/docs` returns HTTP 200, a request without key returns 401, and add/search work (Section 10.6)
@@ -344,7 +344,7 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 - [ ] Every running container uses the `unless-stopped` restart policy (`neo4j-mem0` is intentionally stopped with `no` — Section 5.2):
 
 ```
-docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui docker-paperclip-1 qdrant mem0-server mem0-postgres neo4j-mem0
+docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui qdrant mem0-server mem0-postgres neo4j-mem0
 ```
 
 ---
@@ -547,7 +547,8 @@ ai-agents/crewai/outputs/
 # Secrets
 .env
 ```
-> **Nested repo note:** `ai-agents/paperclip/`, `ai-agents/hermes-agent/` and `ai-agents/mem0-server-src/` are each a git clone of their own upstream repo, with their own `.git`. The lines above stop the main `~/Projects/AI` repo from tracking any of them. Paperclip's own upstream `.gitignore` also already ignores its `.env` and `data/`, so neither can be committed by accident from inside that repo either. Hermes Agent doesn't have this issue — its config/secrets live entirely outside the repo, at `~/.hermes` (Section 9.1). Our own Mem0 server files (`ai-agents/mem0-server/`: Dockerfile, compose, patch, report script, systemd units) **are** tracked; only its `.env`, data and reports are not.
+> **Nested repo note:** `ai-agents/hermes-agent/` and `ai-agents/mem0-server-src/` are each a git clone of their own upstream repo, with their own `.git`. The lines above stop the main `~/Projects/AI` repo from tracking any of them. Hermes Agent's config/secrets live entirely outside the repo, at `~/.hermes` (Section 9.1). Our own Mem0 server files (`ai-agents/mem0-server/`: Dockerfile, compose, patch, report script, systemd units) **are** tracked; only its `.env`, data and reports are not.
+> **`ai-agents/paperclip/` is a legacy line** — it was the upstream Paperclip clone used by the Docker install, deleted on 2026-10-05 when Paperclip went native (Section 8.12). Harmless to keep; can be removed. The native Paperclip keeps its data in `~/.paperclip` (outside the repo); our Paperclip files in **`ai-agents/paperclip-native/`** (helper scripts + Hermes `AGENTS.md`) **are** tracked.
 > The bare `.env` line already matches `.env` files in any folder; `ai-agents/mem0-server/.env` is listed explicitly anyway, as documentation.
 > Reports (`reports/`) are ignored because they contain the text of the memories themselves.
 > Fixed 2026-09-27: the committed `.gitignore` used to contain the literal `cat > … << 'EOF'` and `EOF` lines of the heredoc command that was meant to *create* it. The heredoc is a terminal command — only the lines between those two markers belong in the file.
@@ -556,7 +557,7 @@ ai-agents/crewai/outputs/
 
 ## 7. CrewAI — Personal Crew (venv, YAML config, Mem0 API, called by Hermes)
 
-> **✅ Status (2026-10-01): first Crew running and called by Hermes.** The Crew uses the **Mem0 server REST API** (Section 10) for memory — the old `mem0` library tool, its embedded Qdrant and `crewai_mem0_example.py` were retired on 2026-09-30.
+> **✅ Status (2026-10-01): first Crew running and called by Hermes.** The Crew uses the **Mem0 server REST API** (Section 10) for memory — the old `mem0` library tool, its embedded Qdrant and `crewai_mem0_example.py` were retired on 2026-09-30. Since 2026-10-05 it is also called from **Paperclip** through `pc-crew` (Section 8.7).
 > **Change of plan (2026-09-30):** the first Crew is a **personal assistant team** (tasks and day-to-day), not the "Get Contractors Now" Crew. GCN and the legal POC will get their own Crews later.
 
 How it fits together:
@@ -682,7 +683,7 @@ Tasks (`Process.sequential`), with explicit `context` so each step only sees wha
 
 Why the Critic uses a **different model**: confronting opinions from different model families is a design goal. `qwen3` is from another family than `gpt-oss` and handles tool calls well (`gemma4` failed at that — 9.2). It swaps with `gpt-oss` in VRAM during the run (~20–40 s extra). Answers come in the **request's language** (PT or EN); memories are stored in English.
 
-Measured runs: 1m29s (first, `--verbose`), 1m03s, 1m47s (called by Hermes).
+Measured runs: 1m29s (first, `--verbose`), 1m03s, 1m47s (called by Hermes), ~70 s (called from Paperclip via `pc-crew`, 2026-10-05).
 
 ### 7.5 Quick guide — editing the YAML files
 
@@ -742,9 +743,11 @@ Hermes calls the Crew through its **terminal tool**, using the venv's Python by 
 - If the command fails, show the error message. Never invent or summarize a result the crew did not produce.
 ```
 
+> **Inside Paperclip this section is overridden** by the Hermes `AGENTS.md` (Section 8.7): there Hermes runs `pc-crew` instead of `run_crew.py`, so the crew text goes from the file to the issue comment without passing through the model.
+
 Test (in `hermes`): `Peça para a crew pessoal: compare 3 apps gratuitos de lista de tarefas para usar no celular e no computador, e recomende um.` → one `terminal` call with the command above, ~1–2 min, final answer + folder path.
 
-Timeouts: Hermes's `terminal.timeout` is **180 s** (`~/.hermes/config.yaml`) and the per-tool-call deadline is 420 s — enough for current runs (~1–2 min). If the Crew grows past 3 min, raise `terminal.timeout`.
+Timeouts: Hermes's `terminal.timeout` is **300 s** (`~/.hermes/config.yaml`; raised from 180 s on 2026-10-05 — `hermes config set terminal.timeout 300`, then `hermes -p default gateway restart`) and the per-tool-call deadline is 420 s. Runs measured so far: ~1–2 min. If the Crew grows past 5 min, raise `terminal.timeout` again and keep Paperclip's `timeoutSec` (8.6) above it.
 
 ### 7.7 Troubleshooting notes
 
@@ -761,89 +764,300 @@ Timeouts: Hermes's `terminal.timeout` is **180 s** (`~/.hermes/config.yaml`) and
 
 ---
 
-## 8. Paperclip Agent Manager (Docker)
+## 8. Paperclip Agent Manager (native, systemd user service)
 
 ![Paperclip](images/paperclip.png)
 
-Open-source orchestration platform ([paperclipai/paperclip](https://github.com/paperclipai/paperclip)) that manages a team of AI agents (CrewAI, Claude Code, Codex, etc.) like employees in a company — org chart, tickets, budgets, governance. Will also be used in the future "Get Contractors Now" project.
-> **Why Docker and not native (Node/pnpm):** Paperclip doesn't touch the GPU, so the reason Ollama stays native doesn't apply here. Docker was chosen for isolation and portability, matching the Open WebUI approach — the official install path builds the image locally from source (no pre-built image to just pull), so the repo still needs to be cloned either way.
+Open-source orchestration platform ([paperclipai/paperclip](https://github.com/paperclipai/paperclip)) that manages AI agents like employees in a company — org chart, issues (tasks), comments, budgets, governance. Here it is the **task board for Hermes**: you create an issue, assign it to Hermes, and he does the work (alone or through the personal Crew), posts the answer as a comment and closes the issue. It will also be the base of the future "Get Contractors Now" project (Pending).
 
-### 8.1 Clone the repo
-
-```
-cd ~/Projects/AI/ai-agents
-git clone https://github.com/paperclipai/paperclip.git
-cd paperclip
-```
-
-This creates a **nested git repo** inside `~/Projects/AI` — see the `.gitignore` note in Section 6.
-
-### 8.2 Create `.env` with the auth secret
-
-`BETTER_AUTH_SECRET` (session/auth signing key) is required — the quickstart compose file refuses to start without it. Generate it once and keep it in `.env` at the repo root:
+> **✅ Status (2026-10-05): native install, running as a `systemd` user service, Hermes integrated as CEO via `hermes_local`, Crew reachable through `pc-crew`.** Validated with issues RIZ-1 → RIZ-10 (8.9). The previous Docker install (2026-09-25 → 2026-10-04) was removed — history in 8.12.
 
 ```
-cd ~/Projects/AI/ai-agents/paperclip
-echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" > .env
+You (browser, http://localhost:3100) ──> Paperclip server (Node 24, paperclipai.service, 127.0.0.1:3100, embedded Postgres)
+                                            │  issue assigned to Hermes → heartbeat run (adapter hermes_local)
+                                            └─> hermes chat -q "<AGENTS.md + Paperclip wake prompt>" -m gpt-oss:20b-64k -Q --yolo --source tool
+                                                  ├─ simple task → answers itself → pc-finish done   (comment + status via Paperclip API)
+                                                  └─ "use a crew pessoal" → pc-crew pessoal "<request>"
+                                                        └─ run_crew.py → outputs/pessoal/<folder>/4_final.md → pc-finish done --file …
 ```
 
-- On a reinstall, restore the **old** value from backup instead of generating a new one — a new secret at least invalidates every existing login session.
-- `.env` is already ignored by Paperclip's own upstream `.gitignore`, and the outer repo ignores the whole folder (Section 6).
+### 8.1 Why native and not Docker (changed 2026-10-04)
 
-> History: the current install (2026-09-25) passed the secret inline on the first `docker compose up` and saved it to `.env` afterwards, reading it back with `docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET`. Same end result.
+Paperclip runs agents through **adapters**, and the adapters that fit this stack run the agent **on the same host** as the Paperclip server: `hermes_local` spawns the `hermes` CLI, `process` runs any shell command. Inside the Docker container there was no `hermes`, no CrewAI venv, and `127.0.0.1` was the container itself, not the host. The Docker route would have needed:
 
-### 8.3 Run via Docker Compose (official quickstart)
+- the **`hermes_gateway`** adapter instead: turning on Hermes's API server (`API_SERVER_ENABLED`, a new `API_SERVER_KEY` secret), changing the container network (host network, or `host.docker.internal` + the `dangerouslyAllowInsecureRemoteHttp` escape hatch), and a join/approve/claim-key flow with a second key;
+- for the future "Crew as its own agent" design (Pending, option B), a **custom web service** on the host for the `http` adapter.
 
-```
-cd ~/Projects/AI/ai-agents/paperclip
-docker compose --env-file .env -f docker/docker-compose.quickstart.yml up -d
-```
+Native, both are trivial (`hermes_local` and `process`). And Docker's isolation bought little: whatever Paperclip asks an agent to do runs **on the host anyway** (Hermes, the Crew, their commands). Docker also had port 3100 open to the whole LAN (3.4); the native install listens on `127.0.0.1` only. Nothing in the Docker instance needed to be kept (only the admin account), so the switch started from an empty database.
 
-- **`--env-file .env` is required.** With `-f docker/...`, Compose looks for `.env` in the compose file's own folder (`docker/`), not in the current folder — without the flag it fails with `required variable BETTER_AUTH_SECRET is missing a value` (confirmed 2026-09-27).
-- First run builds the image from the repo's `Dockerfile` (slower); later runs reuse the built image (see 8.7 for updates).
-- Persistent data (embedded PostgreSQL, uploads, secrets key, agent workspace data) lives under `data/docker-paperclip/` at the repo root — the compose file's default `../data/docker-paperclip`, resolved from `docker/`. Ignored by upstream's `.gitignore` (`data/`) and by the outer repo (Section 6).
-- Access at `http://localhost:3100`.
-- Port 3100 is published on all interfaces, so it's open to the LAN regardless of ufw (see 3.4). Paperclip itself still rejects hostnames other than `localhost` until LAN access is configured (see Pending).
+### 8.2 Node.js 24 via nvm
 
-> **Container name:** Compose names it `docker-paperclip-1` (derived from the compose file's folder, `docker`, + the service name), **not** `paperclip`. Use the real name for `docker exec`/`docker update` below — check with `docker ps` if unsure.
-
-### 8.4 Keep it always running (survive reboots)
+Paperclip requires **Node.js ≥ 24.11**; Ubuntu 26.04's `apt` only offers 22. Node is managed with **nvm** (already on this machine, user-level, no `sudo`), so several versions coexist: **Node 20 stays the nvm default** (used by other things) and Node 24 is installed next to it. Terminal, no venv:
 
 ```
-docker update --restart unless-stopped docker-paperclip-1
+nvm install 24          # 24.21.0 on 2026-10-04 — also switches the current terminal to it
+node --version          # v24.x
+nvm alias default       # should still say 20 — leave it
 ```
 
-Same policy as every container in this guide (see 3.2): restarts automatically after a crash or a reboot; only a manual `docker stop docker-paperclip-1` keeps it down.
+New terminals open on Node 20; run `nvm use 24` before any `npm`/`npx` command for Paperclip. The service doesn't depend on this — it calls Node 24 by absolute path (8.4).
 
-> The quickstart compose file has no `restart:` key, so this setting is **lost whenever Compose recreates the container** (e.g. after an update, 8.7). Re-run the command above after every recreate.
+### 8.3 Install (managed install, pinned version)
 
-### 8.5 First login
-
-Open `http://localhost:3100`. The first account created on the setup screen automatically becomes the instance admin — same as Open WebUI (Section 3.6), the email field doesn't need to be real (no SMTP is configured, so nothing is sent/verified). **Done** — admin account created.
-
-### 8.6 Verify
+How it was done (2026-10-04 → 05), and the order to use on a fresh machine. Terminal, no venv:
 
 ```
-cd ~/Projects/AI/ai-agents/paperclip
-docker ps                                   # confirms docker-paperclip-1 is Up
-docker compose --env-file .env -f docker/docker-compose.quickstart.yml config > /dev/null && echo "ENV OK"
-diff <(grep BETTER_AUTH_SECRET .env) <(docker exec docker-paperclip-1 env | grep BETTER_AUTH_SECRET) > /dev/null && echo "SECRET MATCHES" || echo "SECRET DIFFERS"
+nvm use 24
+# 1) bootstrap the CLI with npm -g (temporary). --allow-scripts is required: npm 11 blocks install
+#    scripts, and @embedded-postgres needs its postinstall (it creates the library symlinks Postgres loads)
+npm install -g --allow-scripts=@embedded-postgres/linux-x64,ssh2,protobufjs,cpu-features paperclipai@2026.1001.0
+# 2) managed install — what the systemd service expects (8.4)
+paperclipai install --version 2026.1001.0
+# 3) remove the npm -g bootstrap so only one paperclipai exists
+npm uninstall -g paperclipai
+hash -r
+which -a paperclipai        # only ~/.local/bin/paperclipai (may repeat if ~/.local/bin is in PATH more than once)
+paperclipai --version       # 2026.1001.0 (managed npm pinned; payload ~/.paperclip/cli/installs/npm/2026.1001.0)
 ```
 
-The last two lines check the setup without printing the secret: `ENV OK` means Compose can read `.env`; `SECRET MATCHES` means `.env` holds the same value the running container uses.
+- **History:** the first install was **only** `npm -g` inside nvm (step 1, without a version pin). It ran fine from a terminal, but `paperclipai service install` points the unit at `~/.local/bin/paperclipai`, which didn't exist → the service failed with `status=203/EXEC` (8.11). The managed install (step 2) creates that file; the `npm -g` copy was then removed.
+- `~/.local/bin/paperclipai` is a small shell **shim** that runs `~/.nvm/versions/node/v24.21.0/bin/node` + the managed payload by **absolute path** — so `systemd` doesn't need nvm loaded. Check with `head -5 ~/.local/bin/paperclipai`.
+- **Consequence:** Paperclip depends on that exact nvm Node folder. **Never `nvm uninstall` the Node version the shim points to** without reinstalling Paperclip first (8.10).
+- Pinned to the version validated here; `paperclipai update` handles later updates (8.10).
 
-### 8.7 Updating Paperclip
-
-> Not yet exercised on this install.
+**First run on an empty `~/.paperclip`** (skip it when restoring a backup of `~/.paperclip`):
 
 ```
-cd ~/Projects/AI/ai-agents/paperclip
-git pull
-docker compose --env-file .env -f docker/docker-compose.quickstart.yml up -d --build
-docker update --restart unless-stopped docker-paperclip-1
+paperclipai onboard --yes      # creates config + embedded DB in ~/.paperclip/instances/default and starts the server in the foreground
 ```
 
-`--build` forces a rebuild of the image from the updated source — without it, Compose keeps using the old image. The last line restores the restart policy (see 8.4).
+`--yes` uses the default **`loopback`** bind: `127.0.0.1` only and **no login screen** (anyone on this machine is trusted). LAN access needs the authenticated mode (`--bind lan`, or `paperclipai configure` later) — see Pending. Open `http://localhost:3100`, create the **organization** on the first wizard screen (here: **Rizzo Pessoal**, prefix `RIZ`), then stop at the "Connect a model" screen — the agent is created via CLI (8.6). Stop the foreground server with Ctrl+C before installing the service.
+
+### 8.4 Background service (`paperclipai.service`)
+
+```
+paperclipai service install --enable-linger      # systemd *user* unit: enabled at login + linger (starts at boot without a login)
+paperclipai service status                        # "active": true and "health": {"ok": true, "serverVersion": ...}
+paperclipai service logs                          # or: journalctl --user -u paperclipai.service -f
+paperclipai service restart                       # hot restart, keeps agent runs in progress
+paperclipai service stop | start
+```
+
+Unit: `~/.config/systemd/user/paperclipai.service`, `ExecStart="/home/guilherme/.local/bin/paperclipai" run --instance "default"`. Healthy start in the log: `Database … (pg:54329)`, `Migrations already applied`, `DB Backup enabled (every 60m, keep 30d)`, `Server startup recovery complete on 127.0.0.1:3100`, `Notified systemd that Paperclip is ready`.
+
+> The log line `Heartbeat enabled (30000ms)` is the server's internal **scheduler tick** (every 30 s it checks whether some agent is due). It does **not** wake Hermes — Hermes's own heartbeat schedule is disabled (8.6).
+
+### 8.5 Data, backups and logs
+
+```
+~/.paperclip/
+├── cli/                                   # managed install (re-installable)
+└── instances/default/
+    ├── config.json
+    ├── db/                                # embedded PostgreSQL (port 54329, local only)
+    ├── companies/<company>/agents/<agent>/instructions/AGENTS.md   # managed copy (8.7)
+    ├── workspaces/<agent>/                # fallback workspace per agent
+    └── data/
+        ├── backups/                       # automatic DB backup every 60 min, kept 30 days
+        ├── run-logs/<company>/<agent>/<runId>.ndjson   # one file per agent run
+        └── storage/                       # uploads, avatars
+```
+
+Logs when something goes wrong:
+
+- **Paperclip side, one file per run:** `~/.paperclip/instances/default/data/run-logs/7e7adbbc-c5c7-43bd-b643-e5526f30def9/5edbd915-8290-47f1-9af4-d0a3f06e0d37/<runId>.ndjson` (company / agent IDs of this install). With `quiet: true` (8.6) it holds only the adapter lines and Hermes's **final answer** — the run transcript in the UI ("Worked …" under the comment) shows the same.
+- **Hermes side, the tool calls:** `~/.hermes/logs/agent.log` (`tool_executor` lines: which tool, how long) and `~/.hermes/logs/errors.log`. Sessions are in `~/.hermes/state.db`.
+
+Terminal, no venv:
+
+```
+D=~/.paperclip/instances/default/data/run-logs/7e7adbbc-c5c7-43bd-b643-e5526f30def9/5edbd915-8290-47f1-9af4-d0a3f06e0d37
+tail -c 3000 "$D/$(ls -t $D | head -1)"; echo                          # latest run
+grep -E "2026-10-05 15:4" ~/.hermes/logs/agent.log | grep -E "tool_executor|Turn ended"   # tools in a time window
+```
+
+Read an issue's comments **as stored** (bypassing the UI; loopback mode needs no login for local reads):
+
+```
+python3 - <<'PYEOF'
+import json, urllib.request
+B = "http://127.0.0.1:3100/api"
+C = "7e7adbbc-c5c7-43bd-b643-e5526f30def9"
+get = lambda u: json.load(urllib.request.urlopen(B + u))
+issues = get(f"/companies/{C}/issues")
+issues = issues.get("items", issues) if isinstance(issues, dict) else issues
+iid = next(i["id"] for i in issues if i.get("identifier") == "RIZ-9")
+comments = get(f"/issues/{iid}/comments")
+comments = comments.get("items", comments) if isinstance(comments, dict) else comments
+for c in comments:
+    print("----", c.get("authorType"), c.get("createdAt"))
+    print(c.get("body", ""))
+PYEOF
+```
+
+### 8.6 Company and the Hermes agent (CLI — the wizard can't do it)
+
+The onboarding wizard's **"Connect a model"** step only offers Claude or OpenAI subscriptions/API keys, with no skip (Next stays disabled) — and the wizard comes back on every page load while the company has no CEO. The agent is created with the CLI instead. **Provider** here means who serves the model: Hermes already has its own (`ollama-local` → local Ollama, Section 9.7), so Paperclip needs none.
+
+```
+nvm use 24        # not needed with the managed install, harmless
+paperclipai company list          # → id=7e7adbbc-… name=Rizzo Pessoal
+paperclipai agent create \
+  --company-id 7e7adbbc-c5c7-43bd-b643-e5526f30def9 \
+  --payload-json '{
+    "name": "Hermes",
+    "title": "Orquestrador pessoal",
+    "adapterType": "hermes_local",
+    "adapterConfig": {
+      "hermesCommand": "/home/guilherme/.local/bin/hermes",
+      "model": "gpt-oss:20b-64k",
+      "provider": "auto",
+      "timeoutSec": 600,
+      "persistSession": true,
+      "quiet": true,
+      "paperclipApiUrl": "http://127.0.0.1:3100/api"
+    }
+  }'
+# → agent id 5edbd915-8290-47f1-9af4-d0a3f06e0d37
+A=5edbd915-8290-47f1-9af4-d0a3f06e0d37
+paperclipai agent update $A --payload-json '{"role":"ceo"}'     # the wizard disappears only after this
+paperclipai agent update $A --payload-json '{"runtimeConfig":{"heartbeat":{"enabled":false,"maxConcurrentRuns":1}}}'
+```
+
+Why each setting (read from the adapter code, `@paperclipai/hermes-paperclip-adapter` `dist/server/execute.js`):
+
+| Setting | Value | Why |
+|---|---|---|
+| `hermesCommand` | absolute path | the service doesn't have the terminal's `PATH` |
+| `model` | `gpt-oss:20b-64k` | the adapter **always** passes `-m`; its default is `"auto"`, so the model is set explicitly. **If the orchestrator changes in `~/.hermes/config.yaml`, change it here too** |
+| `provider` | `auto` | when set, the adapter skips reading `config.yaml`; `auto` = no `--provider` flag, Hermes uses its own `ollama-local` |
+| `timeoutSec` | `600` | whole run; must stay above Hermes's `terminal.timeout` (300 s, 7.6) |
+| `persistSession` | `true` | resumes the Hermes session across wakes of the same issue |
+| `quiet` | `true` | `-Q`: Hermes returns only the answer. Without it, the comment echoed the whole prompt (`Query: You are Hermes…`). Trade-off: the UI transcript no longer shows reasoning/tools — use `agent.log` (8.5) |
+| `role` | `ceo` | the onboarding wizard keeps reappearing until the company has a CEO |
+| `heartbeat.enabled` | `false` | Hermes only wakes when an issue is assigned/commented. Turn it on for GCN (Pending) |
+| `maxConcurrentRuns` | `1` (default was 20) | two `gpt-oss` runs at once would fight for the 16 GB GPU (and with Telegram); extra issues wait in line |
+
+> `agent update` with an `adapterConfig` was sent with the **full** object (all keys above plus the four `instructions*` keys Paperclip added on creation — see `paperclipai agent get $A --json`), because it wasn't verified whether it merges or replaces.
+
+What the adapter always adds to the `hermes` command — know these:
+
+- **`--yolo`**: no approval prompts for dangerous commands (there's no one at a TTY to approve). Any issue assigned to Hermes can run commands as your user without confirmation. Acceptable while access is loopback-only and only you create issues; **implications to be discussed** before LAN access (Pending).
+- `--source tool`: tags these sessions so they don't clutter your interactive history (accepted by Hermes build 5130).
+- It **installs a Paperclip skill** into Hermes: `~/.hermes/skills/paperclip` → symlink into the managed install (`~/.paperclip/cli/installs/npm/<version>/node_modules/@paperclipai/server/skills/paperclip`), re-created on each run (`Reconciled 1 Paperclip-managed skill(s)`). It's visible to the Telegram Hermes too (Pending: watch it).
+- Hermes's terminal tool runs in `~/Projects/AI` (its own default), not in Paperclip's fallback workspace — irrelevant for our scripts, which use absolute paths.
+
+### 8.7 `AGENTS.md`, `pc-finish` and `pc-crew` (`ai-agents/paperclip-native/`, tracked)
+
+```
+ai-agents/paperclip-native/
+├── agents/hermes/AGENTS.md   # Hermes instructions inside Paperclip (source of truth; pushed with the CLI)
+└── bin/
+    ├── pc-finish             # posts the final comment + sets the issue status (done | blocked)
+    └── pc-crew               # runs a Crew, then pc-finish done --file <OUTPUT_DIR>/4_final.md
+```
+
+Both scripts are Python **standard library only** (system `python3`, no venv).
+
+**Why they exist.** Paperclip needs every run to end with a **disposition** (`done`, `blocked`, …); otherwise it marks the issue "Missing issue disposition" and queues a corrective wake (a second run). Its built-in contract tells the agent to `curl` its API with `jq`, headers and JSON — too much for `gpt-oss:20b`, which kept calling tools wrongly (RIZ-1: 23 tool calls in 1 min, never closed the issue). The scripts reduce closing to **one plain terminal call**:
+
+- **`pc-finish done|blocked [comment | --file PATH]`** (comment via heredoc/stdin, inline text, or a file). Reads `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_RUN_ID`, `PAPERCLIP_TASK_ID` (injected by Paperclip in every run) and sends `PATCH /api/issues/<id>` with `{status, comment}`. The key is never printed nor passed as an argument. With `--file`, appends `Arquivos: <folder of the file>` after a blank line. Prints `OK: issue set to done (HTTP 200)` or a clear error. Outside a Paperclip run it stops with `error: missing env: …` (that's the quick self-test).
+- **`pc-crew <crew> "<request>"`** runs `crewai/venv/bin/python run_crew.py <crew> "<request>"` (output captured, **not** shown to Hermes — keeps its context small), takes the last `OUTPUT_DIR=` line and calls `pc-finish done --file <dir>/4_final.md`. If the crew fails or prints no `OUTPUT_DIR`, it calls `pc-finish blocked` with the last 1,500 characters of the log — the issue never stays without a status. Internal limit 1,500 s, but in practice the run is bounded by Hermes's `terminal.timeout` (300 s).
+
+**`AGENTS.md`** — Paperclip ships a generic engineering contract (PRs, branches, QA, plan documents, `request_confirmation` interactions…) and prepends the agent's instructions file to every run. Ours replaces it (Paperclip **still appends** its own long wake/API guidance after it — ~17–19K tokens per run measured, well inside the 64K window, `truncated = 0`). Main rules (full text in the repo file):
+
+1. **Decide first:** if the issue mentions the crew ("crew", "crew pessoal", "equipe"), the first and only action is `pc-crew`; never write the answer yourself.
+2. Otherwise do the work and finish with `pc-finish done` (heredoc), or `blocked` + a question if information is missing.
+3. **Call** the `terminal` tool (never write the command/JSON in the answer; never `execute_code`), **one command per call** (no `;`, `&&`, variables, `$(…)`, pipes).
+4. Don't `curl` the Paperclip API even if later instructions show examples. After `OK`, stop; on error, report and stop (max one retry).
+5. **Mem0:** don't save anything in Paperclip tasks unless asked or it's a durable decision/preference; only write "Saved to memory" after a successful `mem0_add`.
+6. No branches, PRs, child issues or new agents unless asked; never paste secrets.
+
+Push changes from the repo copy (the managed copy is rewritten by Paperclip, so don't edit it with `nano`):
+
+```
+paperclipai agent instructions-file:put 5edbd915-8290-47f1-9af4-d0a3f06e0d37 \
+  --path AGENTS.md \
+  --content-file ~/Projects/AI/ai-agents/paperclip-native/agents/hermes/AGENTS.md \
+  --json | grep '"size"'
+```
+
+New runs pick it up immediately (the run log shows `Loaded agent instructions … (<n> chars)`).
+
+### 8.8 Using it
+
+1. `http://localhost:3100` → **New issue** → title + description → **assign to Hermes** → save. Assignment wakes him (no schedule).
+2. Simple task: ~10–20 s. With the crew ("Use a crew pessoal para …"): ~1.5–2 min.
+3. Result: a comment with the answer; with the crew, the full `4_final.md` text + `Arquivos: /home/guilherme/Projects/AI/ai-agents/crewai/outputs/pessoal/<folder>`; the issue moves to **Done** by itself.
+4. Issue codes: `RIZ-<n>` (company prefix + sequence).
+5. If an issue shows "Missing issue disposition": Hermes didn't call `pc-finish`; Paperclip retries once by itself. Close it by hand if needed and check the logs (8.5).
+
+### 8.9 Validation (2026-10-04 → 05)
+
+| Issue | What changed before it | Result |
+|---|---|---|
+| RIZ-1 | default `AGENTS.md`, no helper | Answer right (391), but 23 tool calls, malformed terminal calls, issue not closed (corrective wake) |
+| RIZ-2 | `pc-finish` + lean `AGENTS.md` | Closed, but 2 runs: run 1 **wrote** the command as text; run 2 tried `execute_code` twice before `terminal` |
+| RIZ-3 | `quiet: true`, "call the terminal tool, never execute_code", Mem0 rule | ✅ 1 run, ~19 s, clean comment, Done. Leftover: an empty "Saved to memory:" line (fixed in `SOUL.md`, 10.8) |
+| RIZ-4 | first crew test | Crew ran, but Hermes chained run + `pc-finish` with a `$answer` variable and literal `\n` → comment was literally `$answer` |
+| RIZ-5 | `pc-finish --file`, two separate calls | 1 run, crew ran, but Hermes read the file and **retyped** it (no `--file`, no `Arquivos:` line) |
+| RIZ-6 | `pc-crew` (one call does everything) | ✅ crew text straight from the file; `Arquivos:` line **missing** (8.11) |
+| RIZ-7 | path-format probe | absolute, `~` and relative paths all survive in comments |
+| RIZ-8 | `Arquivos:` without `---`/backticks | Hermes **skipped the crew** and answered by himself (~10 s) |
+| RIZ-9 | "Decide first" rule at the top of `AGENTS.md` | ✅ crew ran (~70 s), full text + `Arquivos:` line, Done |
+| RIZ-10 | after the switch to the managed install + service | ✅ simple task answered and closed |
+
+Also seen in the logs: Hermes opens the browser (`browser_exec`, ~1 s) for no reason before most tasks, and sometimes "wanders" (`cd`, `ls -R`, reading an old folder) before calling `pc-crew` — harmless so far, tracked in Pending.
+
+### 8.10 Updating — Paperclip and Node
+
+**Paperclip** (deliberately; the managed install supports channels, pinned versions and rollback — see `paperclipai update --help`):
+
+```
+paperclipai db:backup                    # extra one-off backup (hourly ones exist too)
+paperclipai update                       # or: paperclipai update --version <x>
+paperclipai service restart
+paperclipai service status               # health ok + new serverVersion
+```
+
+Then test one simple issue and one crew issue (8.9). After an update the Paperclip skill symlink in `~/.hermes/skills/` points to the new version folder (re-created on the next run).
+
+**When to update Node:** rarely — (1) a new Paperclip release requires a newer Node (release notes, or an error on `paperclipai update`); (2) Node 24 security patches (24.21 → 24.22…), not urgent for a loopback-only service — e.g. together with Hermes updates; (3) Node 24 end of life (planned April 2028) → move to the next LTS.
+
+**Procedure — reinstall Paperclip after a Node update** (the shim hard-codes the Node path, 8.3). Terminal, no venv:
+
+```
+nvm install 24                                   # newest 24.x patch (or the next LTS major)
+nvm use 24
+paperclipai install --version <current version>  # rewrites ~/.local/bin/paperclipai with the new Node path
+head -5 ~/.local/bin/paperclipai                 # check: new node path
+paperclipai service restart
+paperclipai service status                       # health ok
+# only after validating: nvm uninstall <old 24.x version>
+```
+
+### 8.11 Troubleshooting
+
+- **`status=203/EXEC` / `Unable to locate executable '/home/guilherme/.local/bin/paperclipai'`** after `service install`: no managed install — run `paperclipai install --version <x>` (8.3), then `systemctl --user reset-failed paperclipai.service && paperclipai service start`. After 5 quick failures systemd stops retrying (`Start request repeated too quickly`) until `reset-failed`.
+- **Onboarding wizard reappears on every page / stuck on "Connect a model":** the company has no CEO — create the agent via CLI and set `role: ceo` (8.6).
+- **"Missing issue disposition"** (`successful_run_missing_state`): the run ended without setting a status; Paperclip queues one corrective wake. Usual causes: Hermes wrote the command instead of calling the tool, or chained commands (8.9).
+- **Comment shows the whole prompt (`Query: You are Hermes…`)**: `quiet` is off.
+- **A line vanished from a comment:** a line `Arquivos: \`/home/…\`` placed right after a `---` separator was dropped when stored (RIZ-6). Plain lines with absolute paths survive (RIZ-7) — `pc-finish` now writes the plain form. Check stored text with the API script (8.5), not the UI.
+- **`error parsing tool call … invalid character ']'` (HTTP 500 from Ollama) in `errors.log`:** `gpt-oss` produced a malformed tool call; Hermes retries. Occasional.
+- **`Response truncated — server ended the stream without finish_reason`**: seen once (RIZ-1). Ollama logs showed `truncated = 0` and ~18K/65K tokens — not a context overflow; a one-off malformed generation.
+- **`npm warn install-scripts … not yet covered by allowScripts`** on the npm bootstrap: reinstall with `--allow-scripts=…` (8.3). Without it the embedded Postgres may not start.
+- **Two `paperclipai` binaries:** `which -a paperclipai` should list only `~/.local/bin/paperclipai`; remove any `npm -g` copy (`nvm use 24 && npm uninstall -g paperclipai`).
+
+### 8.12 History — Docker install (2026-09-25 → 2026-10-04, removed)
+
+First installed from the upstream repo cloned into `ai-agents/paperclip/` (nested repo), image built locally with `docker compose --env-file .env -f docker/docker-compose.quickstart.yml up -d` (no pre-built image exists), container `docker-paperclip-1` (name derived from the compose folder), `BETTER_AUTH_SECRET` in that folder's `.env`, restart policy set by hand (`unless-stopped`, lost on every Compose recreate), data under `data/docker-paperclip/`, port 3100 published on all interfaces. Only an admin account was ever created. Removed on 2026-10-05 after the native install was validated (reasons in 8.1):
+
+```
+docker update --restart no docker-paperclip-1 && docker stop docker-paperclip-1
+docker rm docker-paperclip-1
+docker rmi docker-paperclip:latest                      # freed ~7.6 GB
+sudo rm -rf ~/Projects/AI/ai-agents/paperclip           # sudo: data/ was created by the container's user
+```
 
 ---
 
@@ -853,7 +1067,7 @@ docker update --restart unless-stopped docker-paperclip-1
 
 Autonomous agent framework from Nous Research ([hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)), used to orchestrate/delegate work to the CrewAI team (Section 7) — first the personal Crew, later per-project Crews (e.g. "Get Contractors Now"). Fully local via Ollama, same as everything else in this stack.
 
-> **✅ Status (2026-09-27): reinstalled from scratch and validated** — tool calling and vision both working. A first install earlier the same day was fully reverted after validation problems; that history is condensed in Section 9.12.
+> **✅ Status (2026-09-27): reinstalled from scratch and validated** — tool calling and vision both working. A first install earlier the same day was fully reverted after validation problems; that history is condensed in Section 9.12. Since 2026-10-05 Hermes is also the CEO agent in Paperclip (Section 8).
 
 **Summary of the working setup:**
 
@@ -961,6 +1175,7 @@ hermes config set auxiliary.vision.model gemma4:12b-64k
   ```
   Confirm the main model is self-contained first: `sed -n '57,200p' ~/.hermes/config.yaml | grep -vE '^\s*(#|$)'` should show `provider: "custom"` and `base_url` under `model:`.
 - `ollama_num_ctx` is harmless but effectively redundant — the `-64k` variants are what actually set the context (Section 2.4).
+- `terminal.timeout` raised to `300` on 2026-10-05 (`hermes config set terminal.timeout 300`) — see 7.6.
 
 Verify:
 
@@ -981,6 +1196,8 @@ Hermes (`gpt-oss`, 12 GB) and its vision model (`gemma4`, 8.5 GB) don't fit in 1
 > Ollama also unloads any model idle for 5 minutes (default `keep_alive`), so the first Hermes turn or Mem0 extraction after a pause pays a reload (~20 s measured).
 
 > CrewAI corollary: the Crew uses `Process.sequential` (Section 7.4), so agents never call their models at the same time. When the Critic (`qwen3-14b-32k`, 14 GB) runs, Ollama swaps it with `gpt-oss` the same way (~20–40 s per run).
+
+> Paperclip corollary: Hermes runs from Paperclip are limited to **one at a time** (`maxConcurrentRuns: 1`, Section 8.6), but they can still overlap with a Telegram conversation — Ollama serializes the requests on the same loaded model.
 
 ### 9.10 Validation tests (2026-09-27)
 
@@ -1245,15 +1462,18 @@ Validated: Hermes found, via `mem0_search`, a memory written by a different `age
 - A statement of a decision or fact is information, not a work request: after saving it, reply with a short acknowledgment. Do not search files, run commands or start tasks unless the user asks for them.
 - Saving happens ONLY when you actually call the mem0_add tool and it returns success. Writing about saving does NOT save anything, and the system never adds a "Saved to memory" line for you.
 - Only after mem0_add has returned success in this same turn, end your reply with one line in this exact format: "Saved to memory: <the sentence you saved>".
-- If you did not call mem0_add in this turn, or it failed, NEVER write "Saved to memory". Write instead: "Memory NOT saved: <reason>".
+- If you did not call mem0_add in this turn, NEVER write "Saved to memory" and do not mention memory at all.
+- If you called mem0_add and it failed, write instead: "Memory NOT saved: <reason>".
 - Before answering questions about the user's projects, preferences or past decisions, search memory first.
 ```
 
 Append it with `cat >> ~/.hermes/SOUL.md << 'EOF' ... EOF` and check with `grep -c 'Long-term memory (Mem0)' ~/.hermes/SOUL.md` (must print `1`).
 
+> **Changed 2026-10-05** (backup `SOUL.md.bak-pre-memory-line`): the old rule *"If you did not call mem0_add in this turn, or it failed, NEVER write "Saved to memory". Write instead: "Memory NOT saved: <reason>"."* forced Hermes to talk about memory in **every** reply; in Paperclip runs he ended with an empty `Saved to memory:` line. Now silence means nothing was saved, and `Memory NOT saved` appears only on a real failure. Applied with an exact-text Python replacement, then `hermes -p default gateway restart` + `/new` in Telegram.
+
 **Canary test** — in `hermes`, state a real decision **without** asking to save it. Pass = one `mem0_add`, no file searches, and the reply ends with `Saved to memory: ...`. History: the first version of the rules saved correctly but didn't announce it and treated the statement as a work request (searched files, then asked what to do); the second version passed.
 
-**Hallucinated save (2026-09-30)** — before the Hermes update, a canary reply ended with `Saved to memory: ...` but **no `mem0_add` was called** (no `⚡ mem0_add` line in the chat; the server log only had the auto-sync `skip_infer`); the model's reasoning showed it believed the line was "appended by the system". The update alone proved nothing — the model samples, so one canary is one sample. Fix: the three rules above (they replaced the old single "Whenever you call mem0_add…" line; backup `SOUL.md.bak-pre-anti-hallucination`). Measured with **5 canaries in fresh sessions: 5/5 real saves**, confirmed on the server. Always confirm a canary on the server, not only in the chat:
+**Hallucinated save (2026-09-30)** — before the Hermes update, a canary reply ended with `Saved to memory: ...` but **no `mem0_add` was called** (no `⚡ mem0_add` line in the chat; the server log only had the auto-sync `skip_infer`); the model's reasoning showed it believed the line was "appended by the system". The update alone proved nothing — the model samples, so one canary is one sample. Fix: the rules above (they replaced the old single "Whenever you call mem0_add…" line; backup `SOUL.md.bak-pre-anti-hallucination`). Measured with **5 canaries in fresh sessions: 5/5 real saves**, confirmed on the server. Seen again on 2026-10-04 in a Paperclip run (RIZ-2: `Saved to memory: …` with only `skip_infer` on the server). Always confirm a canary on the server, not only in the chat:
 
 ```
 docker logs mem0-server --since 5m 2>&1 | grep -iE "POST /memories|skip_infer"
@@ -1290,7 +1510,7 @@ systemctl --user show mem0-report.service -p Result          # Result=success
 
 `mem0-report.service`: `Type=oneshot`, `WorkingDirectory=%h/Projects/AI/ai-agents/mem0-server`, `ExecStart=/usr/bin/python3 %h/Projects/AI/ai-agents/mem0-server/mem0_report.py`. `mem0-report.timer`: `OnCalendar=Mon *-*-* 08:45:00`, `Persistent=true`, `WantedBy=timers.target`. To change the schedule, edit `OnCalendar` in the repo copy, copy it again and `daemon-reload`.
 
-**Weekly routine (~5 min, Mondays after 08:45):**
+**Weekly routine (~5 min, Mondays after 08:45)** — done in a **separate, isolated chat** (decided 2026-10-05), not mixed with stage work:
 
 1. Open the latest report: `ls -t ~/Projects/AI/ai-agents/mem0-server/reports | head -1`.
 2. Section 2 — is each new memory true, and still true a month from now? If not: `python3 mem0_report.py --delete <id>` (inside `mem0-server`).
@@ -1302,7 +1522,7 @@ Monthly, across reports: many false negatives → Hermes saves too little; recon
 
 ### 10.10 Updating
 
-- **Hermes:** `hermes update` is safe for this setup — everything we changed lives in `~/.hermes` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`), which updates preserve; no Hermes code was modified. After every update: `hermes doctor`, `hermes memory status`, and the canary test (10.8), since the plugin's behavior could change.
+- **Hermes:** `hermes update` is safe for this setup — everything we changed lives in `~/.hermes` (`config.yaml`, `.env`, `mem0.json`, `SOUL.md`), which updates preserve; no Hermes code was modified. After every update: `hermes doctor`, `hermes memory status`, and the canary test (10.8), since the plugin's behavior could change. Since stage 13 also run one simple and one crew issue in Paperclip (8.9), because the Paperclip adapter passes CLI flags (`-Q`, `--yolo`, `--source tool`).
   Done on 2026-09-30 (build 3714 → 5130, 1,416 commits, config v46 → v49; `compression.threshold_tokens` removed — it held the old default). Backup first, outside the repo (contains secrets; ~850 MB because of sessions/runtime):
   ```
   mkdir -p ~/backups
@@ -1449,7 +1669,7 @@ journalctl --user -u hermes-gateway -f      # live log; Ctrl+C only closes the v
 Healthy start: `Installing Python dependencies` (first time only) → `Connecting to Telegram (attempt 1/8)…` → `Connected to Telegram (polling mode)` (~13 s; it probes fallback routes first).
 
 > `hermes gateway run` (foreground) refuses while the service is running: `The host gateway already serves profile 'default' — nothing to start`. With the service installed, "test mode" = restart + follow the log.
-> After editing `SOUL.md`, also send **`/new`** in Telegram — the file is read when a session starts.
+> After editing `SOUL.md`, also send **`/new`** in Telegram — the file is read when a session starts. (Paperclip runs start a new Hermes process each time, so they pick up changes immediately.)
 
 ### 11.5 Home channel (`/sethome`)
 
@@ -1525,7 +1745,7 @@ cat ~/Projects/AI/ai-agents/crewai/outputs/pessoal/<folder>/*.md        # pedido
 
 **See the agents working** (log): only in the terminal — `python run_crew.py pessoal "..." --verbose` (CrewAI `venv` active, Section 7.3). The bot will tell you the same.
 
-**Save to memory** — say it explicitly for a guaranteed save: "Registre na memória: …", "anota que …", "lembra que …". The reply should end with `Saved to memory: …`; `Memory NOT saved: …` means it didn't save. Confirm on the server when it matters (11.8).
+**Save to memory** — say it explicitly for a guaranteed save: "Registre na memória: …", "anota que …", "lembra que …". The reply should end with `Saved to memory: …`; `Memory NOT saved: …` means `mem0_add` failed; no mention of memory means nothing was saved (rule changed 2026-10-05, 10.8). Confirm on the server when it matters (11.8).
 
 **Useful bot commands** (from `/help`, Hermes v0.21.5 build 5130 — the full list is longer):
 
@@ -1558,20 +1778,38 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 - **"No home channel is set for Telegram"** at every new session: send `/sethome` (11.5).
 - **The bot doesn't answer:** `hermes gateway status`, then `journalctl --user -u hermes-gateway -f` while sending a message; check that Ollama is up (`systemctl status ollama`).
 - **Reply says the memory was saved but you doubt it:** check the server log (11.8). Seen on 2026-10-02: the reply read `Memory saved: …` (not the exact `Saved to memory: …` the rules ask for) — the save was real, but the wording drift is tracked in Pending.
-- **Crew answer without the output folder:** Hermes sometimes omits the `OUTPUT_DIR` line; find the run with `ls -lt` (11.8). Tracked in Pending.
+- **Crew answer without the output folder:** Hermes sometimes omits the `OUTPUT_DIR` line; find the run with `ls -lt` (11.8). Tracked in Pending. (In Paperclip this is solved: `pc-crew` adds the folder itself — 8.7.)
 
 ---
 
 ## Pending / To Investigate
 
-**Next stages (order agreed 2026-09-30)**
+**Next stages**
 
-- [ ] **Stage 13 — Paperclip** integrated with Hermes and the Crew.
 - [ ] **Stage 14 — Jarvis** ([eadmin2/jarvis_ai](https://github.com/eadmin2/jarvis_ai)) — analyze the repo, then install/run.
+- [ ] **Stage 12.1 (should have been part of stage 12) — Hermes ↔ Google** Calendar, Keep Notes, Docs, Drive etc.: study integration options.
+- [ ] **Push to Telegram for calendar alerts and reminders.**
+- [ ] **"Linktree" of local AI services** — one page linking every locally running AI service with a web UI (Open WebUI, Paperclip, Qdrant dashboard, Mem0 API docs…). Idea still to be matured.
+
+**Paperclip (Section 8)**
+
+- [ ] **LAN access, later internet** — native install is in `loopback` (no login). LAN needs the authenticated mode (`paperclipai configure` / `onboard --bind lan`, plus `paperclipai allowed-hostname <host>`); internet only via VPN (3.5). Discuss `--yolo` first.
+- [ ] **Discuss `--yolo`** — the `hermes_local` adapter always runs Hermes without dangerous-command approvals (8.6): implications and mitigations (who can create issues, LAN exposure, limiting toolsets, a separate Hermes profile for Paperclip).
+- [ ] **Unneeded `browser_exec`** at the start of most runs (~1 s) and occasional "wandering" (`cd`, `ls -R`, malformed tool call) before `pc-crew` — find the trigger (Paperclip skill? wake prompt?).
+- [ ] **Limit Hermes toolsets in Paperclip** (adapter `toolsets`) — not now; maybe in future tests (risk of removing Mem0/terminal tools).
+- [ ] **Paperclip skill in `~/.hermes/skills/`** is visible to the Telegram Hermes too — watch whether it gets used outside Paperclip.
+- [ ] **`pc-crew` is bounded by Hermes's `terminal.timeout` (300 s)** — raise both it and `timeoutSec` if crews get longer.
+- [ ] **The model decides whether to use the crew** (RIZ-6 yes, RIZ-8 no, same request) — fixed for now by the "Decide first" rule; the deterministic fix is option B below.
+
+**Get Contractors Now (future project)**
+
+- [ ] **Separate git repository**, a project fully apart from this one, reusing this infrastructure (with the adjustments and GCN-specific pending items listed here).
+- [ ] **Option B in Paperclip** — the GCN Crew as its own agent (adapter `process` running `pc-crew gcn …` directly — simple now that Paperclip is native), so no LLM decides whether to call it.
+- [ ] **Turn on Paperclip's internal schedule (heartbeats)** for GCN agents once it runs (off for Hermes now).
 
 **Personal Crew (Section 7)**
 
-- [ ] **Quality tuning of the prompts** — Telegram test (2026-10-03, Telegram vs. WhatsApp comparison) the Critic let through factual errors: bot chats called end-to-end encrypted "if enabled" (they never are), "no native payments" in the Telegram Bot API (there are), "only quick replies" on WhatsApp (it has interactive buttons/lists), "needs an HTTPS server" (polling needs none), "2 bi bilhões", India listed on both sides; asked for "a few paragraphs", got bullets; `gpt-oss` also produced broken Portuguese in a long answer ("adotei", repeated words). Earlier measured problems: the Critic (`qwen3`) answered in **English** to a Portuguese request; its critique is generic and **missed a contradiction** (To Do "5 collaborators per list" vs. "no strict limits" in the recommendation); the Writer still rejects nothing (`Rejected suggestions: none`); Hermes **dropped the "Rejected suggestions" section** when relaying, despite the "don't shorten" rule; some free-plan numbers looked doubtful (verify facts on official sites).
+- [ ] **Quality tuning of the prompts** — Telegram test (2026-10-03, Telegram vs. WhatsApp comparison) the Critic let through factual errors: bot chats called end-to-end encrypted "if enabled" (they never are), "no native payments" in the Telegram Bot API (there are), "only quick replies" on WhatsApp (it has interactive buttons/lists), "needs an HTTPS server" (polling needs none), "2 bi bilhões", India listed on both sides; asked for "a few paragraphs", got bullets; `gpt-oss` also produced broken Portuguese in a long answer ("adotei", repeated words). Paperclip tests (2026-10-05) repeated it: "private chats and groups are end-to-end encrypted" (only secret chats are), "e-mail accepts attachments of any size" (servers usually cap ~20–25 MB), and once no "Sources" section. Earlier measured problems: the Critic (`qwen3`) answered in **English** to a Portuguese request; its critique is generic and **missed a contradiction** (To Do "5 collaborators per list" vs. "no strict limits" in the recommendation); the Writer still rejects nothing (`Rejected suggestions: none`); Hermes **dropped the "Rejected suggestions" section** when relaying, despite the "don't shorten" rule; some free-plan numbers looked doubtful (verify facts on official sites).
 - [ ] **Temperature per agent** (question for the tuning session) — yes, each agent has its own `temperature` in `agents.yaml`, even with the same model (7.5); decide the values (e.g. a more creative and a more grounded agent) and test.
 - [ ] **Next agents:** Agenda & organization and Finance & shopping (next — most useful), then Technical assistant (needs care: command access). Also to explore: Tutor, Home & maintenance, Travel & leisure, Health & routine (organization only).
 - [ ] **Update CrewAI** 1.15.22 → 1.15.23 (deliberately, with `pip check` + a test run).
@@ -1580,16 +1818,16 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 
 **Telegram / Hermes relay (Section 11)**
 
-- [ ] **Hermes omitted the output folder** (`OUTPUT_DIR`) when relaying the Crew's answer on Telegram — same family as dropping "Rejected suggestions": tighten the relay rule in `SOUL.md` 7.6.
+- [ ] **Hermes omitted the output folder** (`OUTPUT_DIR`) when relaying the Crew's answer on Telegram — same family as dropping "Rejected suggestions": tighten the relay rule in `SOUL.md` 7.6 (or reuse the `pc-crew` idea: let a script append the folder).
 - [ ] **Save-confirmation wording drift** — on Telegram Hermes wrote `Memory saved: …` instead of the exact `Saved to memory: …` (save was real). Matters for the planned "announced without `mem0_add`" detector, which looks for the exact phrase.
 - [ ] **On-demand log / per-task outputs through the bot** (future, only if needed) — e.g. a command or `run_crew.py --telegram` sending via the Bot API with sentence-boundary splitting and a 2 s+ pause (11.7).
 - [ ] **Single paragraph > 4,096 characters** — native split would hard-cut it; adjust only if it ever happens (11.6).
-- [ ] **Update Hermes** (709 commits behind on 2026-10-02) — after stage 12, with the 10.10 routine (backup, doctor, memory status, canary) plus a Telegram test.
+- [ ] **Update Hermes** (709 commits behind on 2026-10-02) — with the 10.10 routine (backup, doctor, memory status, canary) plus a Telegram test and two Paperclip issues.
 
 **Memory (Section 10)**
 
-- [ ] **First weekly memory review — Monday 2026-10-05** (10.9 routine), then monthly assessment.
-- [ ] **Detect "Saved to memory" without `mem0_add`** — extend `mem0_report.py` to scan `~/.hermes/state.db` for replies that announce a save with no `mem0_add` call in the same turn (a single canary is one sample; this measures it continuously).
+- [ ] **First weekly memory review (due 2026-10-05)** — in a **separate chat** (10.9 routine), then monthly assessment.
+- [ ] **Detect "Saved to memory" without `mem0_add`** — extend `mem0_report.py` to scan `~/.hermes/state.db` for replies that announce a save with no `mem0_add` call in the same turn (a single canary is one sample; this measures it continuously). Seen again in Paperclip on 2026-10-04.
 - [ ] **Extraction `max_tokens`** — check `docker logs mem0-server` for cut-off JSON; if found, raise `MEM0_LLM_MAX_TOKENS` to 8192 (env change + recreate).
 - [ ] **Graphiti (Zep)** — temporal knowledge-graph memory on Neo4j (possibly with an MCP server). `neo4j-mem0` stays stopped until then; afterwards keep it (move `ai-agents/mem0/neo4j/` + its `.env` to a folder of its own and recreate with 5.2's command) or remove it.
 - [ ] **MCP in the AI project** — check whether Hermes and CrewAI work as MCP clients; if so, test a Mem0 MCP server in HTTP mode (always-on service), not stdio.
@@ -1599,7 +1837,7 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 - [ ] **Reasoning leaking into answers** — `gpt-oss` sometimes prints its reasoning ("We already have memory… We'll give concise.") at the start of the reply. Investigate together with `/reasoning high`.
 - [ ] **Test `/reasoning high`** with `gpt-oss:20b` — confirm it reaches the model through Ollama `/v1`.
 - [ ] **`cua-driver`** — installed by default by `hermes update` (computer use stays disabled); review whether to opt out (`hermes pm install --without cua-driver`).
-- [ ] **Test other orchestrator models** (installed ones first; `deepseek-r1:14b` is weak at tool calling), then look for models known to work well with Hermes.
+- [ ] **Test other orchestrator models** (installed ones first; `deepseek-r1:14b` is weak at tool calling), then look for models known to work well with Hermes. If the orchestrator changes, update the Paperclip agent's `model` too (8.6).
 - [ ] **Hermes-4-14B at 64K via YaRN** (llama.cpp directly, `q8_0` KV cache) vs. `gpt-oss:20b-64k`; follow issue #53347 / PR #32770 (`allow_short_context`). The GGUF stays installed for this.
 - [ ] **Multiple Hermes profiles** — different agents/models per profile, each with its own Telegram bot; CLI state shared (default). After the current stages.
 - [ ] **SearXNG instead of DuckDuckGo** for Hermes (and the Crew's `buscar_web`).
@@ -1608,11 +1846,19 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 
 **Infrastructure**
 
-- [ ] **Backup & restore procedure** — write and test it for everything in Section 0.2 before the next Ubuntu wipe. Highest priority for a reinstall guide. (A one-off `~/.hermes` backup exists: `~/backups/hermes-pre-update-2026-09-30.tar.gz`, 853 MB, mode 600.)
-- [ ] **Paperclip LAN access** — likely `PAPERCLIP_ALLOWED_HOSTNAMES=<LOCAL_IP>` in `.env`, then recreate (8.3 + 8.4). Untested.
+- [ ] **Backup & restore procedure** — write and test it for everything in Section 0.2 before the next Ubuntu wipe. Highest priority for a reinstall guide. (A one-off `~/.hermes` backup exists: `~/backups/hermes-pre-update-2026-09-30.tar.gz`, 853 MB, mode 600. Paperclip already backs up its DB hourly to `~/.paperclip/instances/default/data/backups/` — 8.5 — but that folder is on the same disk.)
 - [ ] **Remote access (Section 3.5)** — VPN (e.g. Tailscale); not yet configured.
 - [ ] **OpenUI (Weights & Biases) via Docker** — planned, not installed.
 - [ ] **"Coding" agent (remote terminal assistant)** — e.g. Letta Code / App Server. Not yet evaluated.
+- [ ] **`.gitignore` cleanup** — the `ai-agents/paperclip/` line is obsolete (folder deleted, 6).
+
+**Done in stage 13 (2026-10-03 → 2026-10-05)**
+
+- [x] **Paperclip moved from Docker to native** — Node 24 via nvm (default stays 20), managed install `paperclipai@2026.1001.0`, `paperclipai.service` (systemd user, linger), loopback on `127.0.0.1:3100`, hourly DB backups (Section 8). Docker container, 7.6 GB image and the upstream clone removed (8.12).
+- [x] **Hermes as CEO of "Rizzo Pessoal"** — created via CLI (`hermes_local`, explicit model, provider `auto`, `quiet`, 600 s, 1 run at a time, no heartbeat schedule); wizard bypassed with `role: ceo` (8.6).
+- [x] **`pc-finish`, `pc-crew` and the Hermes `AGENTS.md`** in `ai-agents/paperclip-native/` — issues close by themselves; crew text goes file → comment with the folder path (8.7). Validated with RIZ-1 → RIZ-10 (8.9).
+- [x] **Hermes `terminal.timeout` 180 → 300 s** (7.6).
+- [x] **`SOUL.md` memory line** — no more empty "Saved to memory:" (10.8).
 
 **Done in stage 12 (2026-10-02 → 2026-10-03)**
 
@@ -1633,21 +1879,22 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 **Done earlier**
 
 - [x] Stage 10 (2026-09-28 → 29): `OLLAMA_MAX_LOADED_MODELS=2`; legacy `custom_providers` removed; Qdrant server; patched Mem0 server; `MEM0_TELEMETRY=false`; Hermes memory provider + auto-sync block + `SOUL.md` rules + weekly report/timer; Neo4j stopped; Hermes-4-14B GGUF kept for the YaRN test.
-- [x] Before: Paperclip installed; Hermes Agent reinstalled and validated; Hermes vision config root cause; Section 9 cleanup.
+- [x] Before: Paperclip installed (Docker, later replaced); Hermes Agent reinstalled and validated; Hermes vision config root cause; Section 9 cleanup.
 
 ## Notes
 
 - This guide assumes a fresh Ubuntu install on the 500GB partition of the Samsung 990 PRO 2TB.
 - Update model list in Section 2.2 as new models are added/removed.
 - Update Section 3 if additional Docker containers are introduced later (Qdrant and the Mem0 server were — Section 10).
-- Ollama is intentionally kept native, not dockerized — see the note at the top of Section 3.
+- Ollama is intentionally kept native, not dockerized — see the note at the top of Section 3. Paperclip went native too (2026-10-05), for a different reason: its adapters run agents on the same host (Section 8.1).
 - Section 3.5 (remote access) is a placeholder until that setup is actually done.
 - Section 5 (Mem0 library) is legacy since 2026-09-29; the shared memory is the Mem0 server (Section 10).
 - Section 7 (CrewAI) runs in its own Python 3.12 venv; Crews are defined in YAML (`crews/<name>/`) and run by `run_crew.py`. Hermes calls it via `venv/bin/python` by absolute path, so no activation is needed there.
-- Sections 8 (Paperclip), 9 (Hermes Agent) and 10 (`mem0-server-src`) include nested git repos inside `~/Projects/AI` — see the `.gitignore` note in Section 6 before running any `git` commands at the repo root.
-- Hermes Agent's config/secrets live entirely outside the repo at `~/.hermes`; the memory-related pieces (`mem0.json`, `SOUL.md` rules) are written out in Section 10 so they can be recreated.
+- Sections 9 (Hermes Agent) and 10 (`mem0-server-src`) include nested git repos inside `~/Projects/AI` — see the `.gitignore` note in Section 6 before running any `git` commands at the repo root.
+- Hermes Agent's config/secrets live entirely outside the repo at `~/.hermes`; the memory-related pieces (`mem0.json`, `SOUL.md` rules) are written out in Section 10 so they can be recreated. Paperclip's data lives at `~/.paperclip`; its scripts and Hermes instructions are in `ai-agents/paperclip-native/` (tracked).
 - `~/Projects/AI/modelfiles/` (Section 2.4) **is** tracked by git — it holds the Modelfiles for the context variants (`-64k`, `qwen3-14b-32k`).
 - The `OLLAMA_MAX_LOADED_MODELS=2` systemd override (Section 2.3) is a global Ollama setting — it affects every model call from every section of this guide. Ollama still refuses to load a second model that doesn't fit, so two big models never share the GPU.
 - Every running Docker container in this guide uses the `unless-stopped` restart policy (standardized on 2026-09-27 — see 3.2). Exception: `neo4j-mem0`, intentionally stopped with `no` (Section 5.2).
-- Every service added in Section 10 binds to `127.0.0.1` only; nothing new is exposed to the LAN.
+- Every service added in Sections 8 and 10 binds to `127.0.0.1` only; nothing new is exposed to the LAN.
 - The Telegram gateway (Section 11) uses long polling: it opens no port and needs no router change. Who can use the bot is controlled by `TELEGRAM_ALLOWED_USERS` in `~/.hermes/.env`.
+- Three `systemd` **user** services run this stack's background pieces: `hermes-gateway.service` (Telegram + Hermes cron), `paperclipai.service` (Paperclip) and the `mem0-report.timer`. Linger is enabled, so they start at boot without a login.
