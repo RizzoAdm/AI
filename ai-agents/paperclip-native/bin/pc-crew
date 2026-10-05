@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""pc-crew: run a CrewAI crew and finish the current Paperclip issue with its final file.
+
+Usage (inside a Paperclip run):
+  pc-crew pessoal "request text"
+On success: pc-finish done --file <OUTPUT_DIR>/4_final.md
+On failure: pc-finish blocked "<error tail>"
+"""
+import os, subprocess, sys
+
+CREW_DIR = "/home/guilherme/Projects/AI/ai-agents/crewai"
+PY = f"{CREW_DIR}/venv/bin/python"
+RUN = f"{CREW_DIR}/run_crew.py"
+FINISH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pc-finish")
+FINAL = "4_final.md"
+
+def finish(*args):
+    r = subprocess.run([FINISH, *args], capture_output=True, text=True)
+    print((r.stdout + r.stderr).strip())
+    return r.returncode
+
+def main():
+    if len(sys.argv) != 3 or not sys.argv[2].strip():
+        print('usage: pc-crew <crew> "request text"', file=sys.stderr)
+        return 2
+    crew, request = sys.argv[1], sys.argv[2]
+    try:
+        r = subprocess.run([PY, RUN, crew, request], cwd=CREW_DIR,
+                           capture_output=True, text=True, timeout=1500)
+        out = r.stdout + r.stderr
+        code = r.returncode
+    except subprocess.TimeoutExpired:
+        out, code = "crew timed out after 1500s", 1
+    dirs = [l.split("=", 1)[1].strip() for l in out.splitlines() if l.startswith("OUTPUT_DIR=")]
+    final = os.path.join(dirs[-1], FINAL) if dirs else ""
+    if code == 0 and final and os.path.isfile(final):
+        print(f"crew ok: {dirs[-1]}")
+        return finish("done", "--file", final)
+    tail = out.strip()[-1500:] or "no output"
+    print(f"crew failed (exit {code})")
+    finish("blocked", f"A crew '{crew}' falhou (exit {code}). Final do log:\n\n```\n{tail}\n```")
+    return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
