@@ -5,7 +5,7 @@ Step-by-step guide to reinstall all AI-related services on a fresh Ubuntu setup.
 ## Table of Contents
 
 - [Hardware Reference](#hardware-reference) — machine specs, disk layout
-- [0. Before You Start](#0-before-you-start) — git setup, cloning this repo, what is *not* in the repo (data, secrets)
+- [0. Before You Start](#0-before-you-start) — git setup, cloning this repo, what is *not* in the repo (data, secrets), no automatic suspend (0.3)
 - [1. NVIDIA Driver & CUDA Setup](#1-nvidia-driver--cuda-setup) — driver install, `nvidia-smi`, optional CUDA Toolkit
 - [2. Ollama Installation](#2-ollama-installation) — install, model storage path, model list, global setting `OLLAMA_MAX_LOADED_MODELS=2`, 64K context variants (Modelfiles)
 - [3. Open WebUI (Docker)](#3-open-webui-docker) — Docker install, container, restart policy, LAN/remote access, users
@@ -64,6 +64,35 @@ By design (see `.gitignore`, Section 6), the repo holds no data and no secrets. 
 - Optional: Ollama models (`/usr/share/ollama/.ollama/models`, ~110GB) — re-downloadable, just slow
 
 > The backup/restore procedure itself isn't written yet — see Pending.
+
+### 0.3 No automatic suspend (always-on machine)
+
+This machine runs scheduled jobs (the Monday `mem0-report.timer`, Section 10.9) and always-on services (Telegram gateway, Paperclip). Ubuntu's default **suspends after inactivity**, so on 2026-10-05 the 08:45 report only ran at 09:38, when the PC woke up (`Persistent=true` caught up). Disabled on 2026-10-06 in **two places** — the user session and the login screen (GDM, which has its own setting and applies when nobody is logged in, e.g. after a reboot). The screen still blanks; manual suspend from the menu still works.
+
+1. **User session** — terminal on the machine itself (not over SSH), no `sudo`, no venv:
+
+```
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type    # 'nothing'
+```
+
+   (Ubuntu's default was `'suspend'` after `sleep-inactive-ac-timeout` = 7200 s.)
+
+2. **Login screen (GDM)** — `gsettings` can't write as the `gdm` user (no writable dconf cache). The GDM dconf profile (`/usr/share/dconf/profile/gdm`) reads `file-db:/var/lib/gdm3/greeter-dconf-defaults`, which GDM generates from the editable `/etc/gdm3/greeter.dconf-defaults`. Its "Automatic suspend" block ships commented out; uncomment the `sleep-inactive-ac-type` line with `'nothing'`:
+
+```
+sudo cp /etc/gdm3/greeter.dconf-defaults /etc/gdm3/greeter.dconf-defaults.bak-2026-10-06
+sudo sed -i "s/^# sleep-inactive-ac-type='suspend'$/sleep-inactive-ac-type='nothing'/" /etc/gdm3/greeter.dconf-defaults
+sed -n '30,38p' /etc/gdm3/greeter.dconf-defaults    # line under [org/gnome/settings-daemon/plugins/power]: sleep-inactive-ac-type='nothing'
+```
+
+   Takes effect after a **reboot** (don't restart GDM from a running session — it ends the session). Check afterwards (asks for your password; the `dconf-CRITICAL ... Permission denied` lines are harmless):
+
+```
+sudo -u gdm dbus-run-session gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type    # 'nothing'
+```
+
+3. **Linger** must stay on so user timers/services run without a login: `loginctl show-user $USER -p Linger` → `Linger=yes`.
 
 ---
 
@@ -327,6 +356,7 @@ The first account created at `http://localhost:8080` becomes the admin automatic
 - [ ] GPU usage confirmed during inference (`nvidia-smi` while running a prompt)
 - [ ] Open WebUI reachable from another device via `http://<LOCAL_IP>:8080`
 - [ ] Admin account created; additional family user accounts added
+- [ ] No automatic suspend: `gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type` and the GDM check in Section 0.3 both print `'nothing'`
 
 **Agents stack (Sections 5–11)** — check after finishing those sections:
 
@@ -1459,6 +1489,7 @@ Validated: Hermes found, via `mem0_search`, a memory written by a different `age
 - Also call mem0_add whenever the user asks you to remember, note, save or record something, in any wording (e.g. "anota", "lembra", "registre", "guarda").
 - Write each memory as one short, self-contained sentence in English, starting with the project name when relevant (e.g. "Get Contractors Now: second niche will be plumbing in Cochrane.").
 - Do NOT save small talk, questions, your own answers or explanations, temporary task state, or facts already in memory (use mem0_search first if unsure).
+- Never store reminders, to-dos or anything tied to a specific date or relative time ("tomorrow", "next week") in Mem0, even when the user says "lembra", "anota" or "remind me". This overrides the rules above. Mem0 is only for durable facts, decisions and preferences. For a reminder, do not call mem0_add; say you cannot schedule reminders yet and suggest adding it to their reminders app.
 - A statement of a decision or fact is information, not a work request: after saving it, reply with a short acknowledgment. Do not search files, run commands or start tasks unless the user asks for them.
 - Saving happens ONLY when you actually call the mem0_add tool and it returns success. Writing about saving does NOT save anything, and the system never adds a "Saved to memory" line for you.
 - Only after mem0_add has returned success in this same turn, end your reply with one line in this exact format: "Saved to memory: <the sentence you saved>".
@@ -1470,6 +1501,8 @@ Validated: Hermes found, via `mem0_search`, a memory written by a different `age
 Append it with `cat >> ~/.hermes/SOUL.md << 'EOF' ... EOF` and check with `grep -c 'Long-term memory (Mem0)' ~/.hermes/SOUL.md` (must print `1`).
 
 > **Changed 2026-10-05** (backup `SOUL.md.bak-pre-memory-line`): the old rule *"If you did not call mem0_add in this turn, or it failed, NEVER write "Saved to memory". Write instead: "Memory NOT saved: <reason>"."* forced Hermes to talk about memory in **every** reply; in Paperclip runs he ended with an empty `Saved to memory:` line. Now silence means nothing was saved, and `Memory NOT saved` appears only on a real failure. Applied with an exact-text Python replacement, then `hermes -p default gateway restart` + `/new` in Telegram.
+
+> **Changed 2026-10-06** (backup `SOUL.md.bak-2026-10-06`): added the **"Never store reminders…"** line (right after "Do NOT save small talk…"). The first weekly review found two reminders saved as memories ("migrate Google Play account tomorrow", "comprar algodão na London Drugs" — the second even in Portuguese): the "lembra/anota" rule made Hermes save them, but Mem0 never fires anything, so a dated reminder only becomes stale noise. The new line explicitly overrides the "lembra/anota" rule. Inserted with a Python script (after the line starting `- Do NOT save small talk`, idempotent), then `/new` in Telegram. Tested: "lembra de ligar para o dentista amanhã" → Hermes declined and suggested a reminders app, no `Saved to memory`, server log only `skip_infer`. Real reminders are a separate item (Pending: Telegram push / Hermes cron / Agenda agent).
 
 **Canary test** — in `hermes`, state a real decision **without** asking to save it. Pass = one `mem0_add`, no file searches, and the reply ends with `Saved to memory: ...`. History: the first version of the rules saved correctly but didn't announce it and treated the statement as a work request (searched files, then asked what to do); the second version passed.
 
@@ -1519,6 +1552,19 @@ systemctl --user show mem0-report.service -p Result          # Result=success
 5. False negatives — anything important said to Hermes that is missing from section 2? Note it on the report's checklist line.
 
 Monthly, across reports: many false negatives → Hermes saves too little; reconsider automatic sync with expiration + scheduled dedup. Section 2 full of noise → tighten the `SOUL.md` rules. Section 4 high while section 2 is nearly empty → Hermes isn't saving on its own; review `SOUL.md`.
+
+**Routine learnings (first review, 2026-10-05 → 06):**
+
+- **Canary = a real decision only.** A made-up example becomes a false memory and has to be deleted afterwards (it happened on the first review). Confirm on the server: `docker logs --since 10m mem0-server 2>&1 | grep -iE "Inserting|skip_infer" | tail -5` — `Inserting 1 vectors` = real save; only `skip_infer` = nothing saved (the `skip_infer` right after a real save is the same turn's auto-sync, expected).
+- **Find a memory id without waiting a week:** `python3 mem0_report.py --days 1`, then `grep -i "<word>" "reports/$(ls -t reports | head -1)"`.
+- ⚠️ **`--days N` overwrites the day's report** — the file is named by the *local* date only, so a `--days 1` run on a Monday evening (MDT) replaced that morning's weekly `2026-10-05.md` (fix in Pending). Until fixed, copy the weekly report first (`cp reports/AAAA-MM-DD.md reports/AAAA-MM-DD-weekly.md`) or run extra windows on another day.
+- **What counts as noise (deleted):** reminders/to-dos with a date, test data (canary codes), event logs ("X validated on <date>"), a task request saved by a crew ("user wants to compare three apps"), and roadmap items that a later stage already made outdated.
+
+**Weekly review log** — 3 lines per review; compare monthly (first monthly assessment ~2026-11-02):
+
+| Review | New | Deleted (why) | Canary | False negatives | Verdict |
+|---|---|---|---|---|---|
+| 2026-10-05 (done 10-06) | 13 (12 `hermes`, 1 `crew-pessoal`); 7 kept | 6: 2 reminders, 1 test data (Telegram canary code), 1 event log, 1 crew task request, 1 outdated roadmap item. Section 3 pair (0.843) = same subject, kept. Section 4: 50 `skip_infer` | Telegram: pass (real `mem0_add`, `Inserting 1 vectors`); memory was fictional → deleted. Paperclip not tested | none remembered | **Slightly too much** — mostly reminders (fixed in `SOUL.md`, 10.8) |
 
 ### 10.10 Updating
 
@@ -1788,7 +1834,7 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 
 - [ ] **Stage 14 — Jarvis** ([eadmin2/jarvis_ai](https://github.com/eadmin2/jarvis_ai)) — analyze the repo, then install/run.
 - [ ] **Stage 12.1 (should have been part of stage 12) — Hermes ↔ Google** Calendar, Keep Notes, Docs, Drive etc.: study integration options.
-- [ ] **Push to Telegram for calendar alerts and reminders.**
+- [ ] **Push to Telegram for calendar alerts and reminders.** Reminders are **not** memories (decided 2026-10-06, `SOUL.md` 10.8): use the Hermes cron of the gateway (delivers on Telegram) or the future Agenda agent; until then Hermes points to the phone's reminders app.
 - [ ] **"Linktree" of local AI services** — one page linking every locally running AI service with a web UI (Open WebUI, Paperclip, Qdrant dashboard, Mem0 API docs…). Idea still to be matured.
 
 **Paperclip (Section 8)**
@@ -1826,7 +1872,13 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 
 **Memory (Section 10)**
 
-- [ ] **First weekly memory review (due 2026-10-05)** — in a **separate chat** (10.9 routine), then monthly assessment.
+- [ ] **Monthly memory assessment (~2026-11-02)** — compare the weekly review log (10.9).
+- [ ] **`mem0_report.py` must not overwrite the day's report** when run with another window — e.g. save `--days 1` as `AAAA-MM-DD-1d.md`, or refuse to overwrite an existing file (10.9).
+- [ ] **Canary in Paperclip** — the 2026-10-04 hallucinated save was there (RIZ-2); the 2026-10-05/06 `SOUL.md` changes were only tested from Telegram.
+- [ ] **Tighten the Crew's memory rules** — `crew-pessoal` saved a task request ("user wants to compare three free task list apps…") as a memory (first weekly review).
+- [ ] **Stale plan memories** — roadmap/plan memories go out of date when a stage changes (the "Telegram after the personal crew" item). Consider a `SOUL.md` rule: when a saved plan changes, `mem0_search` and update/delete the old memory instead of only adding.
+- [ ] **Agenda agent model** — not decided yet (to be discussed with the Agenda agent work).
+- [ ] **After the next reboot: confirm the GDM no-suspend setting** — `sudo -u gdm dbus-run-session gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type` → `'nothing'` (0.3).
 - [ ] **Detect "Saved to memory" without `mem0_add`** — extend `mem0_report.py` to scan `~/.hermes/state.db` for replies that announce a save with no `mem0_add` call in the same turn (a single canary is one sample; this measures it continuously). Seen again in Paperclip on 2026-10-04.
 - [ ] **Extraction `max_tokens`** — check `docker logs mem0-server` for cut-off JSON; if found, raise `MEM0_LLM_MAX_TOKENS` to 8192 (env change + recreate).
 - [ ] **Graphiti (Zep)** — temporal knowledge-graph memory on Neo4j (possibly with an MCP server). `neo4j-mem0` stays stopped until then; afterwards keep it (move `ai-agents/mem0/neo4j/` + its `.env` to a folder of its own and recreate with 5.2's command) or remove it.
@@ -1851,6 +1903,13 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 - [ ] **OpenUI (Weights & Biases) via Docker** — planned, not installed.
 - [ ] **"Coding" agent (remote terminal assistant)** — e.g. Letta Code / App Server. Not yet evaluated.
 - [ ] **`.gitignore` cleanup** — the `ai-agents/paperclip/` line is obsolete (folder deleted, 6).
+
+**Done in the first weekly memory review (2026-10-05 → 06)**
+
+- [x] **Review done** in a separate chat (10.9 routine): 13 new memories, 6 deleted, 7 kept; log + learnings in 10.9.
+- [x] **`SOUL.md` reminders rule** — reminders/to-dos never go to Mem0 (overrides "lembra/anota"); tested from Telegram (10.8).
+- [x] **Telegram canary passed** (real `mem0_add` confirmed on the server).
+- [x] **No automatic suspend** — user session (`gsettings`) and login screen (`/etc/gdm3/greeter.dconf-defaults`); linger already on (0.3). GDM part confirmed only after the next reboot (Pending).
 
 **Done in stage 13 (2026-10-03 → 2026-10-05)**
 
@@ -1897,4 +1956,4 @@ Use with care: `/yolo` (skips **all** dangerous-command approvals) and `/approva
 - Every running Docker container in this guide uses the `unless-stopped` restart policy (standardized on 2026-09-27 — see 3.2). Exception: `neo4j-mem0`, intentionally stopped with `no` (Section 5.2).
 - Every service added in Sections 8 and 10 binds to `127.0.0.1` only; nothing new is exposed to the LAN.
 - The Telegram gateway (Section 11) uses long polling: it opens no port and needs no router change. Who can use the bot is controlled by `TELEGRAM_ALLOWED_USERS` in `~/.hermes/.env`.
-- Three `systemd` **user** services run this stack's background pieces: `hermes-gateway.service` (Telegram + Hermes cron), `paperclipai.service` (Paperclip) and the `mem0-report.timer`. Linger is enabled, so they start at boot without a login.
+- Three `systemd` **user** services run this stack's background pieces: `hermes-gateway.service` (Telegram + Hermes cron), `paperclipai.service` (Paperclip) and the `mem0-report.timer`. Linger is enabled, so they start at boot without a login. Automatic suspend is disabled (Section 0.3), so the machine stays awake for them.
