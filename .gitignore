@@ -9,7 +9,7 @@ ai-agents/mem0/neo4j/plugins/
 ai-agents/mem0/qdrant_data/
 
 # Nested git repos (Paperclip and Hermes Agent are each cloned from their own
-# upstream repo — see Sections 8 and 9)
+# upstream repo — see Sections 9 and 5)
 ai-agents/paperclip/
 ai-agents/hermes-agent/
 
