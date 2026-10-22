@@ -177,6 +177,8 @@ nvcc --version
 
 ## 2. Ollama Installation
 
+![Ollama_banner](images/Ollama_banner.png)
+
 Install Ollama:
 
 ```
@@ -339,7 +341,7 @@ docker run hello-world
 
 ## 4. Open WebUI (Docker)
 
-![Open WebUI](images/OpenWebUI.png)
+![OpenWebUI_banner](images/OpenWebUI_banner.png)
 
 ### 4.1 Run Open WebUI
 
@@ -372,6 +374,8 @@ docker logs open-webui
 ### 4.3 First Login & Users
 
 The first account created at `http://localhost:8080` becomes the admin automatically. Additional users (e.g. family members) are added manually via *Admin Panel → Users → Add User*. The "email" field is required as a login identifier but doesn't need to be a real, working address (e.g. `name@family.local` works fine — nothing is sent to it).
+
+![Open WebUI](images/OpenWebUI.png)
 
 ### 4.4 LAN Access (other devices at home)
 
