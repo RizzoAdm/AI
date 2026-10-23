@@ -1666,7 +1666,6 @@ docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui qdra
 
 **Next stages**
 
-- [ ] **Stage 15 — Finance agent** (priority, ahead of Jarvis) — family finance agent: bank and credit-card statements → Google Sheets for a macro view (deterministic parsers do the math; the LLM only helps where needed, e.g. ambiguous categories). An agenda/reminders agent (Google Calendar) comes after it.
 - [ ] **Stage 14 — Jarvis** ([eadmin2/jarvis_ai](https://github.com/eadmin2/jarvis_ai)) — analyze the repo, then install/run.
 - [ ] **Stage 12.1 (should have been part of stage 12) — Hermes ↔ Google** Calendar, Keep Notes, Docs, Drive etc.: study integration options.
 - [ ] **Push to Telegram for calendar alerts and reminders.** Reminders are **not** memories (decided 2026-10-06, `SOUL.md` 6.9): use the Hermes cron of the gateway (delivers on Telegram) or the future Agenda agent; until then Hermes points to the phone's reminders app.
@@ -1701,7 +1700,7 @@ docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui qdra
 
 - [ ] **Quality tuning of the prompts** — Telegram test (2026-10-03, Telegram vs. WhatsApp comparison) the Critic let through factual errors: bot chats called end-to-end encrypted "if enabled" (they never are), "no native payments" in the Telegram Bot API (there are), "only quick replies" on WhatsApp (it has interactive buttons/lists), "needs an HTTPS server" (polling needs none), "2 bi bilhões", India listed on both sides; asked for "a few paragraphs", got bullets; `gpt-oss` also produced broken Portuguese in a long answer ("adotei", repeated words). Paperclip tests (2026-10-05) repeated it: "private chats and groups are end-to-end encrypted" (only secret chats are), "e-mail accepts attachments of any size" (servers usually cap ~20–25 MB), and once no "Sources" section. Earlier measured problems: the Critic (`qwen3`) answered in **English** to a Portuguese request; its critique is generic and **missed a contradiction** (To Do "5 collaborators per list" vs. "no strict limits" in the recommendation); the Writer still rejects nothing (`Rejected suggestions: none`); Hermes **dropped the "Rejected suggestions" section** when relaying, despite the "don't shorten" rule; some free-plan numbers looked doubtful (verify facts on official sites).
 - [ ] **Temperature per agent** (question for the tuning session) — yes, each agent has its own `temperature` in `agents.yaml`, even with the same model (7.6); decide the values (e.g. a more creative and a more grounded agent) and test.
-- [ ] **Next agents:** Agenda & organization and Finance & shopping (next — most useful), then Technical assistant (needs care: command access). Also to explore: Tutor, Home & maintenance, Travel & leisure, Health & routine (organization only).
+- [ ] **Next agents:** Agenda & organization (next — most useful; Finance done in stage 15), then Technical assistant (needs care: command access). Also to explore: Tutor, Home & maintenance, Travel & leisure, Health & routine (organization only).
 - [ ] **Agenda agent model** — not decided yet (to be discussed with the Agenda agent work).
 - [ ] **Update CrewAI** 1.15.22 → 1.15.23 (deliberately, with `pip check` + a test run).
 - [ ] **Old leftovers in the CrewAI venv** (`qdrant-client`, `thinc`, `neo4j`, `langchain-neo4j`, …) — optional cleanup, only with care (`pip show` → `Required-by`).
@@ -1751,6 +1750,15 @@ docker inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' open-webui qdra
 - [ ] **2.2** says `nomic-embed-text` is required by Mem0 "(Appendix A.3)" — today it's the Mem0 server (6.4).
 
 ## Project Log
+
+**Done in stage 15 — Family finance agent (finished 2026-10-23)**
+
+- [x] **Moved to its own private repository** (`RizzoAdm/financas`, full history kept with `git filter-repo`; this repo's history no longer contains the folder). Code, tests and manuals (`docs/uso.md`, `tecnico.md`, `operacao.md`, `decisoes.md`) live there; data and credentials stay outside both repos.
+- [x] **What it does:** bank, credit-card, credit-line and brokerage statements (CSV, OFX, digital PDF) → validated parsers → CAD conversion at the Bank of Canada daily rate → deterministic pairing of transfers/payments → rule-based categorization with a review tab → Google Sheets with annual, per-person, debt, investment and chart dashboards. A systemd path/timer processes the inbox automatically.
+- [x] **Where AI is used (and where it isn't):** the local LLMs (Ollama) only *suggest* a category for unknown merchants, by unanimous vote among models over a closed list; nothing becomes a rule without human confirmation. All numbers are computed by code.
+- [x] **Self-checking:** coverage check proves no statement is missing (balance chains, statement chaining); a read-only audit compares every dashboard cell with the local files (independent recalculation layer) at the end of every run; tests use fake Sheets/APIs and every test is validated by mutation testing.
+- [x] **Recovery:** 3 reversal layers (undo an import, automatic data backups, Sheets version history), spreadsheet rebuild from local copies, and a verified backup to a second disk (`backup.py`: SHA-256 check, hard links, git bundle).
+- [ ] Deferred: public, generalized English version of the repo + English manuals; automated/encrypted backups.
 
 **Done in the first weekly memory review (2026-10-05 → 06)**
 
